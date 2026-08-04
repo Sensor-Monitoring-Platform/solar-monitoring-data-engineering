@@ -1,0 +1,119 @@
+---
+# ============================================================
+# Sensor Type Configuration
+# Defines valid ranges, thresholds, anomaly behaviour per type
+# ============================================================
+
+sensor_types:
+  temperature_process:
+    unit: "celsius"
+    sampling_frequency_seconds: 30
+    is_safety_critical: false
+    normal_range:
+      min: 60.0
+      max: 180.0
+    warning_threshold:
+      low: 50.0
+      high: 190.0
+    critical_threshold:
+      low: 40.0
+      high: 210.0
+    noise_std_dev: 1.5
+    drift_rate_per_hour: 0.05
+    offline_grace_period_seconds: 120
+
+  temperature_ambient:
+    unit: "celsius"
+    sampling_frequency_seconds: 60
+    is_safety_critical: false
+    normal_range:
+      min: 18.0
+      max: 35.0
+    warning_threshold:
+      low: 15.0
+      high: 38.0
+    critical_threshold:
+      low: 10.0
+      high: 45.0
+    noise_std_dev: 0.5
+    drift_rate_per_hour: 0.02
+    offline_grace_period_seconds: 300
+
+  vibration:
+    unit: "g_rms"
+    sampling_frequency_seconds: 10
+    is_safety_critical: true
+    normal_range:
+      min: 0.1
+      max: 4.5
+    warning_threshold:
+      low: 0.05
+      high: 7.0
+    critical_threshold:
+      low: 0.01
+      high: 10.0
+    noise_std_dev: 0.3
+    drift_rate_per_hour: 0.01
+    offline_grace_period_seconds: 60
+
+  pressure:
+    unit: "bar"
+    sampling_frequency_seconds: 15
+    is_safety_critical: true
+    normal_range:
+      min: 2.0
+      max: 8.0
+    warning_threshold:
+      low: 1.5
+      high: 9.0
+    critical_threshold:
+      low: 1.0
+      high: 10.5
+    noise_std_dev: 0.1
+    drift_rate_per_hour: 0.03
+    offline_grace_period_seconds: 90
+
+  current_draw:
+    unit: "amperes"
+    sampling_frequency_seconds: 30
+    is_safety_critical: false
+    normal_range:
+      min: 5.0
+      max: 25.0
+    warning_threshold:
+      low: 3.0
+      high: 28.0
+    critical_threshold:
+      low: 1.0
+      high: 35.0
+    noise_std_dev: 0.8
+    drift_rate_per_hour: 0.1
+    offline_grace_period_seconds: 120
+
+  smoke_alarm:
+    unit: "ppm"
+    sampling_frequency_seconds: 60
+    is_safety_critical: true
+    normal_range:
+      min: 0.0
+      max: 50.0
+    warning_threshold:
+      low: -1.0    # not applicable for low
+      high: 100.0
+    critical_threshold:
+      low: -1.0
+      high: 200.0
+    noise_std_dev: 2.0
+    drift_rate_per_hour: 0.0
+    offline_grace_period_seconds: 120
+
+  access_control:
+    unit: null      # badge-scan events, no numeric reading
+    sampling_frequency_seconds: 0   # event-driven, not periodic
+    is_safety_critical: false
+    normal_range: null
+    warning_threshold: null
+    critical_threshold: null
+    noise_std_dev: 0.0
+    drift_rate_per_hour: 0.0
+    offline_grace_period_seconds: 600

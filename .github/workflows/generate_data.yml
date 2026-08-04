@@ -1,0 +1,93 @@
+# ============================================================
+# GitHub Actions: IoT Sensor Data Generator
+# ============================================================
+# Runs simulate_sensors.py on a schedule (or manually) to
+# generate sensor data and upload it to Hugging Face Buckets.
+#
+# Required Repository Secrets:
+#   HF_ACCESS_KEY_ID     — Hugging Face S3 Access Key
+#   HF_SECRET_ACCESS_KEY — Hugging Face S3 Secret Key
+#   HF_NAMESPACE         — Your HF username or org name
+#   HF_BUCKET_NAME       — Name of your Storage Bucket
+# ============================================================
+
+name: Generate Sensor Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: "How long to generate data (minutes)"
+        required: false
+        default: "5"
+        type: string
+      batch_size:
+        description: "Max readings per file"
+        required: false
+        default: "500"
+        type: string
+      tick_seconds:
+        description: "Seconds between generation ticks"
+        required: false
+        default: "30"
+        type: string
+  schedule:
+    - cron: "0 */6 * * *"
+
+jobs:
+  generate:
+    name: Generate & Upload Sensor Data
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      HF_ACCESS_KEY_ID:     ${{ secrets.HF_ACCESS_KEY_ID }}
+      HF_SECRET_ACCESS_KEY: ${{ secrets.HF_SECRET_ACCESS_KEY }}
+      HF_NAMESPACE:         ${{ secrets.HF_NAMESPACE }}
+      HF_BUCKET_NAME:       ${{ secrets.HF_BUCKET_NAME }}
+
+    # THIS IS THE KEY CHANGE: Tells the job to run inside the generators folder
+    defaults:
+      run:
+        working-directory: ./generators
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate secrets are set
+        run: |
+          if [ -z "$HF_ACCESS_KEY_ID" ] || [ -z "$HF_SECRET_ACCESS_KEY" ] || [ -z "$HF_NAMESPACE" ]; then
+            echo "::error::Missing required secrets. Please set HF_ACCESS_KEY_ID, HF_SECRET_ACCESS_KEY, HF_NAMESPACE, and HF_BUCKET_NAME in repository Settings → Secrets."
+            exit 1
+          fi
+
+      - name: Run sensor data generator
+        id: generate
+        run: |
+          python simulate_sensors.py \
+            --duration-minutes ${{ github.event.inputs.duration_minutes || '5' }} \
+            --batch-size ${{ github.event.inputs.batch_size || '500' }} \
+            --tick-seconds ${{ github.event.inputs.tick_seconds || '30' }}
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 📊 Sensor Data Generation Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Total Readings | ${{ steps.generate.outputs.total_readings || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Total Batches  | ${{ steps.generate.outputs.total_batches || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Duration       | ${{ github.event.inputs.duration_minutes || '5' }} min |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bucket         | ${{ env.HF_BUCKET_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by   | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY

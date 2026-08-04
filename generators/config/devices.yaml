@@ -1,0 +1,174 @@
+---
+# ============================================================
+# Manufacturing IoT Device Topology
+# Plants → Production Lines → Machines → Sensors
+# ============================================================
+
+plants:
+  - plant_id: "PLT-GGN-01"
+    plant_name: "Gurugram Manufacturing Unit"
+    city: "Gurugram"
+    country: "India"
+    timezone: "Asia/Kolkata"
+    commissioned_date: "2022-03-15"
+
+    production_lines:
+      - line_id: "LINE-GGN01-01"
+        line_name: "Assembly Line Alpha"
+        line_type: "assembly"
+
+        machines:
+          - machine_id: "MC-ASM-01"
+            machine_name: "Robotic Arm A1"
+            machine_type: "robotic_arm"
+            manufacturer: "Fanuc"
+            install_date: "2022-04-01"
+            rated_capacity_units_per_hour: 120
+
+            sensors:
+              - device_id: "TEMP-GGN01-L01-MC01-001"
+                device_type: "temperature_process"
+                firmware_version: "1.3.2"
+                install_date: "2022-04-01"
+                last_calibration_date: "2026-06-10"
+
+              - device_id: "VIB-GGN01-L01-MC01-001"
+                device_type: "vibration"
+                firmware_version: "2.1.0"
+                install_date: "2022-04-01"
+                last_calibration_date: "2026-05-20"
+
+              - device_id: "CURR-GGN01-L01-MC01-001"
+                device_type: "current_draw"
+                firmware_version: "1.0.4"
+                install_date: "2022-04-01"
+                last_calibration_date: "2026-07-01"
+
+          - machine_id: "MC-ASM-02"
+            machine_name: "Conveyor Belt B1"
+            machine_type: "conveyor"
+            manufacturer: "Siemens"
+            install_date: "2022-04-10"
+            rated_capacity_units_per_hour: 200
+
+            sensors:
+              - device_id: "TEMP-GGN01-L01-MC02-001"
+                device_type: "temperature_ambient"
+                firmware_version: "1.3.2"
+                install_date: "2022-04-10"
+                last_calibration_date: "2026-06-15"
+
+              - device_id: "VIB-GGN01-L01-MC02-001"
+                device_type: "vibration"
+                firmware_version: "2.1.0"
+                install_date: "2022-04-10"
+                last_calibration_date: "2026-05-25"
+
+      - line_id: "LINE-GGN01-02"
+        line_name: "Lamination Line Beta"
+        line_type: "lamination"
+
+        machines:
+          - machine_id: "MC-LAM-05"
+            machine_name: "Heat Press H1"
+            machine_type: "heat_press"
+            manufacturer: "Schuler"
+            install_date: "2022-05-01"
+            rated_capacity_units_per_hour: 80
+
+            sensors:
+              - device_id: "TEMP-GGN01-L02-MC05-001"
+                device_type: "temperature_process"
+                firmware_version: "1.3.2"
+                install_date: "2022-05-01"
+                last_calibration_date: "2026-06-20"
+
+              - device_id: "PRESS-GGN01-L02-MC05-001"
+                device_type: "pressure"
+                firmware_version: "1.1.0"
+                install_date: "2022-05-01"
+                last_calibration_date: "2026-06-25"
+
+              - device_id: "VIB-GGN01-L02-MC05-001"
+                device_type: "vibration"
+                firmware_version: "2.1.0"
+                install_date: "2022-05-01"
+                last_calibration_date: "2026-05-30"
+
+  - plant_id: "PLT-CHN-01"
+    plant_name: "Chennai Production Facility"
+    city: "Chennai"
+    country: "India"
+    timezone: "Asia/Kolkata"
+    commissioned_date: "2023-01-20"
+
+    production_lines:
+      - line_id: "LINE-CHN01-01"
+        line_name: "Packaging Line Gamma"
+        line_type: "packaging"
+
+        machines:
+          - machine_id: "MC-PKG-01"
+            machine_name: "Carton Sealer C1"
+            machine_type: "sealer"
+            manufacturer: "Bosch"
+            install_date: "2023-02-01"
+            rated_capacity_units_per_hour: 300
+
+            sensors:
+              - device_id: "TEMP-CHN01-L01-MC01-001"
+                device_type: "temperature_ambient"
+                firmware_version: "1.3.2"
+                install_date: "2023-02-01"
+                last_calibration_date: "2026-07-05"
+
+              - device_id: "SMOKE-CHN01-L01-MC01-001"
+                device_type: "smoke_alarm"
+                firmware_version: "3.0.1"
+                install_date: "2023-02-01"
+                last_calibration_date: "2026-07-10"
+
+          - machine_id: "MC-PKG-02"
+            machine_name: "Label Printer L1"
+            machine_type: "printer"
+            manufacturer: "Zebra"
+            install_date: "2023-02-15"
+            rated_capacity_units_per_hour: 500
+
+            sensors:
+              - device_id: "TEMP-CHN01-L01-MC02-001"
+                device_type: "temperature_process"
+                firmware_version: "1.3.2"
+                install_date: "2023-02-15"
+                last_calibration_date: "2026-07-01"
+
+              - device_id: "CURR-CHN01-L01-MC02-001"
+                device_type: "current_draw"
+                firmware_version: "1.0.4"
+                install_date: "2023-02-15"
+                last_calibration_date: "2026-06-28"
+
+      - line_id: "LINE-CHN01-02"
+        line_name: "Quality Control Line Delta"
+        line_type: "quality_control"
+
+        machines:
+          - machine_id: "MC-QC-01"
+            machine_name: "Vision Inspector V1"
+            machine_type: "vision_system"
+            manufacturer: "Keyence"
+            install_date: "2023-03-01"
+            rated_capacity_units_per_hour: 150
+
+            sensors:
+              - device_id: "TEMP-CHN01-L02-MC01-001"
+                device_type: "temperature_ambient"
+                firmware_version: "1.3.2"
+                install_date: "2023-03-01"
+                last_calibration_date: "2026-07-15"
+
+              - device_id: "ACCESS-CHN01-L02-MC01-001"
+                device_type: "access_control"
+                firmware_version: "4.0.0"
+                install_date: "2023-03-01"
+                last_calibration_date: "2026-07-20"
