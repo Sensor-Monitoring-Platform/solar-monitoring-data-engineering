@@ -4,7 +4,7 @@ simulate_sensors.py — IoT Sensor Data Generator
 Generates realistic manufacturing sensor readings and uploads
 them as raw JSON files to Hugging Face Storage Buckets (S3-compatible).
 
-Bronze layer: raw, untransformed data — exactly what a device would send.
+Raw layer: raw, untransformed data — exactly what a device would send.
 
 Usage:
     # Local run (needs env vars set)
@@ -17,7 +17,7 @@ Environment Variables Required:
     HF_ACCESS_KEY_ID      — Hugging Face S3 Access Key (starts with HFAK...)
     HF_SECRET_ACCESS_KEY  — Hugging Face S3 Secret Key
     HF_NAMESPACE          — Your HF username or org name
-    HF_BUCKET_NAME        — Name of your Storage Bucket (e.g. "iot-bronze")
+    HF_BUCKET_NAME        — Name of your Storage Bucket (e.g. "iot-raw")
 """
 
 import argparse
@@ -294,7 +294,7 @@ def ensure_bucket_exists(s3_client, bucket_name: str):
 def upload_batch(s3_client, bucket_name: str, readings: list[dict], batch_id: str):
     """
     Upload a batch of readings as a single NDJSON file.
-    Path convention: bronze/year=YYYY/month=MM/day=DD/hour=HH/{batch_id}.json
+    Path convention: raw/year=YYYY/month=MM/day=DD/hour=HH/{batch_id}.json
 
     This partitioning scheme lets downstream tools (DuckDB, Spark)
     do partition-pruning on date columns without a catalog.
@@ -305,7 +305,7 @@ def upload_batch(s3_client, bucket_name: str, readings: list[dict], batch_id: st
 
     now = datetime.now(timezone.utc)
     partition_path = (
-        f"bronze/"
+        f"raw/"
         f"year={now.strftime('%Y')}/"
         f"month={now.strftime('%m')}/"
         f"day={now.strftime('%d')}/"
@@ -368,7 +368,7 @@ def run(
     bucket_name = None
     if not dry_run:
         s3_client = create_s3_client()
-        bucket_name = os.environ.get("HF_BUCKET_NAME", "iot-bronze")
+        bucket_name = os.environ.get("HF_BUCKET_NAME", "iot-raw")
         ensure_bucket_exists(s3_client, bucket_name)
 
     # Timing
