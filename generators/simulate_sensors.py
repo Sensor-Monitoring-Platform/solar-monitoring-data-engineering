@@ -305,7 +305,7 @@ def upload_batch(s3_client, bucket_name: str, readings: list[dict], batch_id: st
 
     now = datetime.now(timezone.utc)
     partition_path = (
-        f"bronze/"
+        f"raw/"
         f"year={now.strftime('%Y')}/"
         f"month={now.strftime('%m')}/"
         f"day={now.strftime('%d')}/"
