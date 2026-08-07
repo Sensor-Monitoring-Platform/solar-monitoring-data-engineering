@@ -2,30 +2,27 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 from pyspark.sql import DataFrame, SparkSession
 
 try:
-    from .config import PROJECT_ROOT
     from .schemas import BRONZE_OUTPUT_SCHEMA, QUARANTINE_SCHEMA
 except ImportError:  # pragma: no cover - direct script execution
-    from config import PROJECT_ROOT
     from schemas import BRONZE_OUTPUT_SCHEMA, QUARANTINE_SCHEMA
 
 
-def _resolve_input_files(input_path: str) -> List[Path]:
-    candidate = input_path
-    if candidate.startswith("hf://"):
-        candidate = str(PROJECT_ROOT / candidate[len("hf://") :])
+# ---------------------------------------------------------------------------
+# Source providers — each yields (source_file_name, lines) tuples.
+# The validation/parsing loop below doesn't care which one supplied a line.
+# ---------------------------------------------------------------------------
 
-    path = Path(candidate)
+def _resolve_local_files(input_path: str) -> List[Path]:
+    path = Path(input_path)
     if path.is_file():
         return [path]
-
     if not path.exists():
         return []
-
     return sorted(
         [
             file_path
@@ -34,6 +31,29 @@ def _resolve_input_files(input_path: str) -> List[Path]:
         ]
     )
 
+
+def _iter_local_sources(input_path: str) -> Iterable[Tuple[str, Iterable[str]]]:
+    """Yield (source_name, lines) for every local NDJSON file under input_path."""
+    for file_path in _resolve_local_files(input_path):
+        with open(file_path, "r", encoding="utf-8") as handle:
+            yield str(file_path), handle.readlines()
+
+
+def _iter_s3_sources(s3_client, bucket: str, prefix: str) -> Iterable[Tuple[str, Iterable[str]]]:
+    """Yield (source_name, lines) for every raw object in the HF bucket."""
+    try:
+        from .hf_storage import list_raw_batches
+    except ImportError:  # pragma: no cover - direct script execution
+        from hf_storage import list_raw_batches
+
+    for key in list_raw_batches(s3_client, bucket, prefix):
+        body = s3_client.get_object(Bucket=bucket, Key=key)["Body"].read()
+        yield f"s3://{bucket}/{key}", body.decode("utf-8").splitlines()
+
+
+# ---------------------------------------------------------------------------
+# Parsing / validation (unchanged from the original implementation)
+# ---------------------------------------------------------------------------
 
 def _parse_timestamp(value) -> datetime | None:
     if not value:
@@ -129,132 +149,154 @@ def _validate_record(record: Dict, device_lookup: Dict, sensor_lookup: Dict, tol
     return errors
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 def read_raw_data(
     spark: SparkSession,
-    input_path: str,
     device_lookup: Dict,
     sensor_lookup: Dict,
     processing_job_id: str,
     tolerance_minutes: int = 5,
+    input_path: str = None,
+    use_hf_storage: bool = False,
+    s3_client=None,
+    hf_bucket: str = None,
+    hf_prefix: str = "raw/",
 ) -> Tuple[DataFrame, DataFrame]:
-    input_files = _resolve_input_files(input_path)
-    if not input_files:
-        return (
-            spark.createDataFrame([], schema=BRONZE_OUTPUT_SCHEMA),
-            spark.createDataFrame([], schema=QUARANTINE_SCHEMA),
-        )
+    """
+    Read raw NDJSON records either from the HF bucket (use_hf_storage=True)
+    or from local disk (use_hf_storage=False, reading input_path). Every
+    record goes through the same validation/hashing/quarantine logic
+    regardless of source.
+    """
+    if use_hf_storage:
+        if s3_client is None or hf_bucket is None:
+            raise ValueError("s3_client and hf_bucket are required when use_hf_storage=True")
+        sources = _iter_s3_sources(s3_client, hf_bucket, hf_prefix)
+    else:
+        if not input_path:
+            raise ValueError("input_path is required when use_hf_storage=False")
+        sources = _iter_local_sources(input_path)
 
     valid_rows: List[Dict] = []
     quarantine_rows: List[Dict] = []
     seen_hashes = set()
     now = datetime.now(timezone.utc)
+    files_seen = 0
 
-    for input_file in input_files:
-        with open(input_file, "r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, 1):
-                payload = line.strip()
-                if not payload:
-                    continue
+    for source_file_name, lines in sources:
+        files_seen += 1
+        for line_number, line in enumerate(lines, 1):
+            payload = line.strip()
+            if not payload:
+                continue
 
-                source_file_name = str(input_file)
-                try:
-                    parsed = json.loads(payload)
-                except json.JSONDecodeError as exc:
-                    quarantine_rows.append(
-                        {
-                            "source_file_name": source_file_name,
-                            "raw_payload": payload,
-                            "error_reason": f"Malformed JSON at line {line_number}: {exc}",
-                            "processing_timestamp": now,
-                            "processing_job_id": processing_job_id,
-                            "is_corrupt": True,
-                        }
-                    )
-                    continue
-
-                if not isinstance(parsed, dict):
-                    quarantine_rows.append(
-                        {
-                            "source_file_name": source_file_name,
-                            "raw_payload": payload,
-                            "error_reason": "Record is not a JSON object",
-                            "processing_timestamp": now,
-                            "processing_job_id": processing_job_id,
-                            "is_corrupt": True,
-                        }
-                    )
-                    continue
-
-                reading = parsed.get("reading", {}) or {}
-                if not isinstance(reading, dict):
-                    reading = {}
-
-                row = {
-                    "device_id": parsed.get("device_id"),
-                    "device_type": parsed.get("device_type"),
-                    "plant_id": parsed.get("plant_id"),
-                    "machine_id": parsed.get("machine_id"),
-                    "timestamp": parsed.get("timestamp"),
-                    "reading_value": reading.get("value"),
-                    "reading_unit": reading.get("unit"),
-                    "firmware_version": parsed.get("firmware_version"),
-                    "quality_flag": parsed.get("quality_flag", "OK"),
-                    "ingestion_timestamp": parsed.get("ingestion_timestamp"),
-                    "source_file_name": source_file_name,
-                }
-
-                errors = _validate_record(row, device_lookup, sensor_lookup, tolerance_minutes, now)
-                if errors:
-                    quarantine_rows.append(
-                        {
-                            "source_file_name": source_file_name,
-                            "raw_payload": payload,
-                            "error_reason": "; ".join(errors),
-                            "processing_timestamp": now,
-                            "processing_job_id": processing_job_id,
-                            "is_corrupt": True,
-                        }
-                    )
-                    continue
-
-                record_hash = _build_record_hash(row)
-                if record_hash in seen_hashes:
-                    quarantine_rows.append(
-                        {
-                            "source_file_name": source_file_name,
-                            "raw_payload": payload,
-                            "error_reason": "Duplicate record",
-                            "processing_timestamp": now,
-                            "processing_job_id": processing_job_id,
-                            "is_corrupt": True,
-                        }
-                    )
-                    continue
-
-                seen_hashes.add(record_hash)
-                parsed_timestamp = _parse_timestamp(row["timestamp"])
-                ingestion_timestamp = _parse_timestamp(row["ingestion_timestamp"])
-                valid_rows.append(
+            try:
+                parsed = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                quarantine_rows.append(
                     {
-                        "device_id": row["device_id"],
-                        "device_type": row["device_type"],
-                        "plant_id": row["plant_id"],
-                        "machine_id": row["machine_id"],
-                        "timestamp": parsed_timestamp,
-                        "reading_value": float(row["reading_value"]),
-                        "reading_unit": row["reading_unit"],
-                        "firmware_version": row["firmware_version"],
-                        "quality_flag": row["quality_flag"],
-                        "ingestion_timestamp": ingestion_timestamp or now,
-                        "source_file_name": row["source_file_name"],
+                        "source_file_name": source_file_name,
+                        "raw_payload": payload,
+                        "error_reason": f"Malformed JSON at line {line_number}: {exc}",
                         "processing_timestamp": now,
                         "processing_job_id": processing_job_id,
-                        "bronze_version": "1.0",
-                        "record_hash": record_hash,
-                        "is_corrupt": False,
-                        "error_reason": None,
+                        "is_corrupt": True,
                     }
                 )
+                continue
+
+            if not isinstance(parsed, dict):
+                quarantine_rows.append(
+                    {
+                        "source_file_name": source_file_name,
+                        "raw_payload": payload,
+                        "error_reason": "Record is not a JSON object",
+                        "processing_timestamp": now,
+                        "processing_job_id": processing_job_id,
+                        "is_corrupt": True,
+                    }
+                )
+                continue
+
+            reading = parsed.get("reading", {}) or {}
+            if not isinstance(reading, dict):
+                reading = {}
+
+            row = {
+                "device_id": parsed.get("device_id"),
+                "device_type": parsed.get("device_type"),
+                "plant_id": parsed.get("plant_id"),
+                "machine_id": parsed.get("machine_id"),
+                "timestamp": parsed.get("timestamp"),
+                "reading_value": reading.get("value"),
+                "reading_unit": reading.get("unit"),
+                "firmware_version": parsed.get("firmware_version"),
+                "quality_flag": parsed.get("quality_flag", "OK"),
+                "ingestion_timestamp": parsed.get("ingestion_timestamp"),
+                "source_file_name": source_file_name,
+            }
+
+            errors = _validate_record(row, device_lookup, sensor_lookup, tolerance_minutes, now)
+            if errors:
+                quarantine_rows.append(
+                    {
+                        "source_file_name": source_file_name,
+                        "raw_payload": payload,
+                        "error_reason": "; ".join(errors),
+                        "processing_timestamp": now,
+                        "processing_job_id": processing_job_id,
+                        "is_corrupt": True,
+                    }
+                )
+                continue
+
+            record_hash = _build_record_hash(row)
+            if record_hash in seen_hashes:
+                quarantine_rows.append(
+                    {
+                        "source_file_name": source_file_name,
+                        "raw_payload": payload,
+                        "error_reason": "Duplicate record",
+                        "processing_timestamp": now,
+                        "processing_job_id": processing_job_id,
+                        "is_corrupt": True,
+                    }
+                )
+                continue
+
+            seen_hashes.add(record_hash)
+            parsed_timestamp = _parse_timestamp(row["timestamp"])
+            ingestion_timestamp = _parse_timestamp(row["ingestion_timestamp"])
+            valid_rows.append(
+                {
+                    "device_id": row["device_id"],
+                    "device_type": row["device_type"],
+                    "plant_id": row["plant_id"],
+                    "machine_id": row["machine_id"],
+                    "timestamp": parsed_timestamp,
+                    "reading_value": float(row["reading_value"]),
+                    "reading_unit": row["reading_unit"],
+                    "firmware_version": row["firmware_version"],
+                    "quality_flag": row["quality_flag"],
+                    "ingestion_timestamp": ingestion_timestamp or now,
+                    "source_file_name": row["source_file_name"],
+                    "processing_timestamp": now,
+                    "processing_job_id": processing_job_id,
+                    "bronze_version": "1.0",
+                    "record_hash": record_hash,
+                    "is_corrupt": False,
+                    "error_reason": None,
+                }
+            )
+
+    if files_seen == 0:
+        return (
+            spark.createDataFrame([], schema=BRONZE_OUTPUT_SCHEMA),
+            spark.createDataFrame([], schema=QUARANTINE_SCHEMA),
+        )
 
     bronze_df = spark.createDataFrame(valid_rows, schema=BRONZE_OUTPUT_SCHEMA)
     quarantine_df = spark.createDataFrame(quarantine_rows, schema=QUARANTINE_SCHEMA)
