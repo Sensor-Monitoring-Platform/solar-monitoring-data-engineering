@@ -1,0 +1,93 @@
+# ============================================================
+# GitHub Actions: Bronze Layer Pipeline
+# ============================================================
+# Reads raw NDJSON from the Hugging Face bucket, validates +
+# enriches it with Spark, and writes/merges the result back as
+# a Delta table in the same bucket (bronze/ and
+# bronze_quarantine/ prefixes).
+#
+# Required Repository Secrets (same ones generate_data.yml uses):
+#   HF_ACCESS_KEY_ID     — Hugging Face S3 Access Key
+#   HF_SECRET_ACCESS_KEY — Hugging Face S3 Secret Key
+#   HF_NAMESPACE         — Your HF username or org name
+#   HF_BUCKET_NAME       — Name of your Storage Bucket
+# ============================================================
+
+name: Process Bronze Layer
+
+on:
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      processing_job_id:
+        description: "Identifier for this pipeline run"
+        required: false
+        default: ""
+
+  # Chain automatically after a successful data-generation run
+  workflow_run:
+    workflows: ["Generate Sensor Data"]
+    types:
+      - completed
+
+  # Independent safety-net schedule, offset 15 min after the generator
+  schedule:
+    - cron: "15 */6 * * *"
+
+jobs:
+  bronze:
+    name: Run Bronze Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: >
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    env:
+      HF_ACCESS_KEY_ID:     ${{ secrets.HF_ACCESS_KEY_ID }}
+      HF_SECRET_ACCESS_KEY: ${{ secrets.HF_SECRET_ACCESS_KEY }}
+      HF_NAMESPACE:         ${{ secrets.HF_NAMESPACE }}
+      HF_BUCKET_NAME:       ${{ secrets.HF_BUCKET_NAME }}
+      USE_HF_STORAGE:       "true"
+      PROCESSING_JOB_ID:    ${{ github.event.inputs.processing_job_id || github.run_id }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java (required by Spark/Delta)
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate secrets are set
+        run: |
+          if [ -z "$HF_ACCESS_KEY_ID" ] || [ -z "$HF_SECRET_ACCESS_KEY" ] || [ -z "$HF_NAMESPACE" ]; then
+            echo "::error::Missing required secrets. Please set HF_ACCESS_KEY_ID, HF_SECRET_ACCESS_KEY, HF_NAMESPACE, and HF_BUCKET_NAME in repository Settings → Secrets."
+            exit 1
+          fi
+
+      - name: Run Bronze pipeline
+        working-directory: pipelines/bronze
+        run: python main.py
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🥉 Bronze Layer Processing Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Processing Job ID | ${{ env.PROCESSING_JOB_ID }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bucket | ${{ env.HF_BUCKET_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
