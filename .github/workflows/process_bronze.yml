@@ -51,6 +51,10 @@ jobs:
       USE_HF_STORAGE:       "true"
       PROCESSING_JOB_ID:    ${{ github.event.inputs.processing_job_id || github.run_id }}
 
+    defaults:
+      run:
+        working-directory: ./pipelines/bronze
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
