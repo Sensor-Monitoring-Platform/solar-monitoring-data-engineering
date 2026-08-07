@@ -1,4 +1,3 @@
 # Generator (generators/simulate_sensors.py)
-boto3==1.34.144
-botocore==1.34.144
+boto3>=1.36.1
 PyYAML==6.0.1
