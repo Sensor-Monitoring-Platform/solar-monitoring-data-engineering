@@ -2,7 +2,7 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from pyspark.sql import DataFrame, SparkSession
 
@@ -13,8 +13,12 @@ except ImportError:  # pragma: no cover - direct script execution
 
 
 # ---------------------------------------------------------------------------
-# Source providers — each yields (source_file_name, lines) tuples.
-# The validation/parsing loop below doesn't care which one supplied a line.
+# Source providers — each yields (source_file_name, lines, last_modified)
+# tuples. last_modified is None for local files (no watermark concept there)
+# and the object's upload time (UTC datetime) for S3 sources. The
+# validation loop below doesn't care which provider supplied a line; it
+# just tracks the max last_modified it has seen to hand back as the new
+# watermark.
 # ---------------------------------------------------------------------------
 
 def _resolve_local_files(input_path: str) -> List[Path]:
@@ -32,23 +36,25 @@ def _resolve_local_files(input_path: str) -> List[Path]:
     )
 
 
-def _iter_local_sources(input_path: str) -> Iterable[Tuple[str, Iterable[str]]]:
-    """Yield (source_name, lines) for every local NDJSON file under input_path."""
+def _iter_local_sources(input_path: str) -> Iterable[Tuple[str, Iterable[str], None]]:
+    """Yield (source_name, lines, None) for every local NDJSON file under input_path."""
     for file_path in _resolve_local_files(input_path):
         with open(file_path, "r", encoding="utf-8") as handle:
-            yield str(file_path), handle.readlines()
+            yield str(file_path), handle.readlines(), None
 
 
-def _iter_s3_sources(s3_client, bucket: str, prefix: str) -> Iterable[Tuple[str, Iterable[str]]]:
-    """Yield (source_name, lines) for every raw object in the HF bucket."""
+def _iter_s3_sources(
+    s3_client, bucket: str, prefix: str, since: Optional[datetime]
+) -> Iterable[Tuple[str, Iterable[str], datetime]]:
+    """Yield (source_name, lines, last_modified) for raw objects newer than `since`."""
     try:
         from .hf_storage import list_raw_batches
     except ImportError:  # pragma: no cover - direct script execution
         from hf_storage import list_raw_batches
 
-    for key in list_raw_batches(s3_client, bucket, prefix):
+    for key, last_modified in list_raw_batches(s3_client, bucket, prefix, since=since):
         body = s3_client.get_object(Bucket=bucket, Key=key)["Body"].read()
-        yield f"s3://{bucket}/{key}", body.decode("utf-8").splitlines()
+        yield f"s3://{bucket}/{key}", body.decode("utf-8").splitlines(), last_modified
 
 
 # ---------------------------------------------------------------------------
@@ -164,17 +170,24 @@ def read_raw_data(
     s3_client=None,
     hf_bucket: str = None,
     hf_prefix: str = "raw/",
-) -> Tuple[DataFrame, DataFrame]:
+    since: Optional[datetime] = None,
+) -> Tuple[DataFrame, DataFrame, Optional[datetime]]:
     """
-    Read raw NDJSON records either from the HF bucket (use_hf_storage=True)
-    or from local disk (use_hf_storage=False, reading input_path). Every
-    record goes through the same validation/hashing/quarantine logic
-    regardless of source.
+    Read raw NDJSON records either from the HF bucket (use_hf_storage=True,
+    only objects uploaded after `since`) or from local disk
+    (use_hf_storage=False, reading input_path in full — no watermark
+    concept for local testing). Every record goes through the same
+    validation/hashing/quarantine logic regardless of source.
+
+    Returns (bronze_df, quarantine_df, new_watermark). new_watermark is the
+    latest object last_modified time seen this run (to be persisted as the
+    next checkpoint), or unchanged from `since` if no new objects were
+    found. Always None when use_hf_storage=False.
     """
     if use_hf_storage:
         if s3_client is None or hf_bucket is None:
             raise ValueError("s3_client and hf_bucket are required when use_hf_storage=True")
-        sources = _iter_s3_sources(s3_client, hf_bucket, hf_prefix)
+        sources = _iter_s3_sources(s3_client, hf_bucket, hf_prefix, since)
     else:
         if not input_path:
             raise ValueError("input_path is required when use_hf_storage=False")
@@ -185,9 +198,13 @@ def read_raw_data(
     seen_hashes = set()
     now = datetime.now(timezone.utc)
     files_seen = 0
+    watermark = since
 
-    for source_file_name, lines in sources:
+    for source_file_name, lines, last_modified in sources:
         files_seen += 1
+        if last_modified is not None and (watermark is None or last_modified > watermark):
+            watermark = last_modified
+
         for line_number, line in enumerate(lines, 1):
             payload = line.strip()
             if not payload:
@@ -296,8 +313,9 @@ def read_raw_data(
         return (
             spark.createDataFrame([], schema=BRONZE_OUTPUT_SCHEMA),
             spark.createDataFrame([], schema=QUARANTINE_SCHEMA),
+            watermark,
         )
 
     bronze_df = spark.createDataFrame(valid_rows, schema=BRONZE_OUTPUT_SCHEMA)
     quarantine_df = spark.createDataFrame(quarantine_rows, schema=QUARANTINE_SCHEMA)
-    return bronze_df, quarantine_df
+    return bronze_df, quarantine_df, watermark

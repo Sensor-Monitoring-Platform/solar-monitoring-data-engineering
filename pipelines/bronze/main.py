@@ -7,6 +7,7 @@ try:
         DEVICE_METADATA,
         HF_BRONZE_PREFIX,
         HF_BUCKET_NAME,
+        HF_CHECKPOINT_KEY,
         HF_QUARANTINE_PREFIX,
         HF_RAW_PREFIX,
         PROCESSING_JOB_ID,
@@ -15,7 +16,14 @@ try:
         SENSOR_METADATA,
         USE_HF_STORAGE,
     )
-    from .hf_storage import create_s3_client, download_prefix, upload_directory
+    from .hf_storage import (
+        create_s3_client,
+        download_prefix,
+        parse_checkpoint_watermark,
+        read_checkpoint,
+        upload_directory,
+        write_checkpoint,
+    )
     from .metadata_loader import build_lookup_dicts, create_metadata_dataframes, load_yaml
     from .reader import read_raw_data
     from .schema_manager import SchemaManager
@@ -29,6 +37,7 @@ except ImportError:  # pragma: no cover - direct script execution
         DEVICE_METADATA,
         HF_BRONZE_PREFIX,
         HF_BUCKET_NAME,
+        HF_CHECKPOINT_KEY,
         HF_QUARANTINE_PREFIX,
         HF_RAW_PREFIX,
         PROCESSING_JOB_ID,
@@ -37,7 +46,14 @@ except ImportError:  # pragma: no cover - direct script execution
         SENSOR_METADATA,
         USE_HF_STORAGE,
     )
-    from hf_storage import create_s3_client, download_prefix, upload_directory
+    from hf_storage import (
+        create_s3_client,
+        download_prefix,
+        parse_checkpoint_watermark,
+        read_checkpoint,
+        upload_directory,
+        write_checkpoint,
+    )
     from metadata_loader import build_lookup_dicts, create_metadata_dataframes, load_yaml
     from reader import read_raw_data
     from schema_manager import SchemaManager
@@ -50,6 +66,8 @@ def main():
     spark = create_spark()
 
     s3_client = None
+    watermark = None
+
     if USE_HF_STORAGE:
         log("Connecting to Hugging Face storage bucket...")
         s3_client = create_s3_client()
@@ -64,6 +82,17 @@ def main():
         n = download_prefix(s3_client, HF_BUCKET_NAME, HF_QUARANTINE_PREFIX, QUARANTINE_PATH)
         log(f"Restored {n} existing quarantine Delta file(s) from HF bucket")
 
+        # Watermark: only look at raw objects uploaded after the last
+        # successful run. Without this, every run re-lists and re-validates
+        # the entire raw/ history, and old-but-already-processed batches
+        # fail the timestamp-freshness check and pile up in quarantine.
+        checkpoint = read_checkpoint(s3_client, HF_BUCKET_NAME, HF_CHECKPOINT_KEY)
+        watermark = parse_checkpoint_watermark(checkpoint)
+        if watermark:
+            log(f"Resuming from checkpoint: only reading raw objects uploaded after {watermark.isoformat()}")
+        else:
+            log("No checkpoint found — this is the first run, reading full raw/ history")
+
     log("Loading metadata...")
     devices = load_yaml(DEVICE_METADATA)
     sensors = load_yaml(SENSOR_METADATA)
@@ -75,7 +104,7 @@ def main():
     log(f"Sensor Types: {sensor_df.count()}")
 
     log("Reading raw input files...")
-    bronze_df, quarantine_df = read_raw_data(
+    bronze_df, quarantine_df, new_watermark = read_raw_data(
         spark,
         device_lookup,
         sensor_lookup,
@@ -86,7 +115,12 @@ def main():
         s3_client=s3_client,
         hf_bucket=HF_BUCKET_NAME,
         hf_prefix=HF_RAW_PREFIX,
+        since=watermark,
     )
+
+    if USE_HF_STORAGE and (watermark is None or new_watermark == watermark):
+        log("No new raw objects since the last checkpoint — nothing to process this run.")
+        return
 
     bronze_df = (
         bronze_df.withColumn("timestamp", to_timestamp(col("timestamp")))
@@ -135,6 +169,9 @@ def main():
         log(f"Error writing quarantine data: {str(e)}")
         raise
 
+    bronze_count = bronze_df.count()
+    quarantine_count = quarantine_df.count()
+
     if USE_HF_STORAGE:
         log("Syncing Bronze Delta table back to Hugging Face bucket...")
         n = upload_directory(s3_client, HF_BUCKET_NAME, BRONZE_OUTPUT_PATH, HF_BRONZE_PREFIX)
@@ -143,13 +180,26 @@ def main():
         n = upload_directory(s3_client, HF_BUCKET_NAME, QUARANTINE_PATH, HF_QUARANTINE_PREFIX)
         log(f"Uploaded {n} quarantine file(s) -> s3://{HF_BUCKET_NAME}/{HF_QUARANTINE_PREFIX}")
 
+        # Only advance the checkpoint after the writes and uploads above
+        # have succeeded — if anything failed, we want the next run to
+        # retry the same objects rather than silently skip them.
+        write_checkpoint(
+            s3_client,
+            HF_BUCKET_NAME,
+            HF_CHECKPOINT_KEY,
+            watermark=new_watermark,
+            processing_job_id=PROCESSING_JOB_ID,
+            files_processed=bronze_count + quarantine_count,
+        )
+        log(f"Checkpoint advanced to {new_watermark.isoformat()}")
+
     log(f"Bronze data written to: {BRONZE_OUTPUT_PATH}")
     log(f"Quarantine data written to: {QUARANTINE_PATH}")
     log(f"""
     Bronze Job Summary
     ------------------
-    Valid Records      : {bronze_df.count()}
-    Quarantined        : {quarantine_df.count()}
+    Valid Records      : {bronze_count}
+    Quarantined        : {quarantine_count}
     Processing Job ID  : {PROCESSING_JOB_ID}
     """)
 
