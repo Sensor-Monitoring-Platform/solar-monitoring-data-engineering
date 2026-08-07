@@ -118,7 +118,7 @@ def main():
         since=watermark,
     )
 
-    if USE_HF_STORAGE and (watermark is None or new_watermark == watermark):
+    if USE_HF_STORAGE and new_watermark == watermark:
         log("No new raw objects since the last checkpoint — nothing to process this run.")
         return
 

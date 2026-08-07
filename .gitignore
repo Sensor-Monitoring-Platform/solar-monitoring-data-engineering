@@ -7,3 +7,4 @@ venv/
 dist/
 build/
 delete_data_code/
+scripts/
