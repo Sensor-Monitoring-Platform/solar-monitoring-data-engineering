@@ -32,6 +32,12 @@ BRONZE_OUTPUT_SCHEMA = StructType(
         StructField("timestamp", TimestampType(), True),
         StructField("reading_value", DoubleType(), True),
         StructField("reading_unit", StringType(), True),
+        # Event-driven sensor fields (e.g. access_control badge scans).
+        # NULL for every other device_type — this is exactly the kind of
+        # nullable schema evolution Bronze.md describes for new firmware
+        # fields: existing records get NULL, nothing breaks.
+        StructField("badge_id", StringType(), True),
+        StructField("access_granted", BooleanType(), True),
         StructField("firmware_version", StringType(), True),
         StructField("quality_flag", StringType(), True),
         StructField("ingestion_timestamp", TimestampType(), True),
