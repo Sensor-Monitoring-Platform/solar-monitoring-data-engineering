@@ -121,24 +121,30 @@ def _validate_record(record: Dict, device_lookup: Dict, sensor_lookup: Dict, tol
     if not record.get("machine_id"):
         errors.append("machine_id is missing")
 
+    # sensor_config.yaml sets unit: null for event-driven sensor types (e.g.
+    # access_control badge scans) to mean "this type has no numeric
+    # reading by design" — not "unit is unknown." Treat that as a real
+    # exemption from the reading_value/reading_unit checks below, rather
+    # than quarantining every valid event from that sensor type.
+    sensor_metadata = sensor_lookup.get(record.get("device_type"))
+    expected_unit = sensor_metadata.get("unit") if sensor_metadata else None
+    is_event_driven_sensor = sensor_metadata is not None and expected_unit is None
+
     reading_value = record.get("reading_value")
-    if reading_value is None:
-        errors.append("reading_value is missing")
-    else:
-        try:
-            float(reading_value)
-        except (TypeError, ValueError):
-            errors.append("reading_value is not numeric")
+    if not is_event_driven_sensor:
+        if reading_value is None:
+            errors.append("reading_value is missing")
+        else:
+            try:
+                float(reading_value)
+            except (TypeError, ValueError):
+                errors.append("reading_value is not numeric")
 
     reading_unit = record.get("reading_unit")
-    if not reading_unit:
-        errors.append("reading_unit is missing")
-    else:
-        expected_unit = None
-        sensor_metadata = sensor_lookup.get(record.get("device_type"))
-        if sensor_metadata:
-            expected_unit = sensor_metadata.get("unit")
-        if expected_unit and reading_unit != expected_unit:
+    if not is_event_driven_sensor:
+        if not reading_unit:
+            errors.append("reading_unit is missing")
+        elif expected_unit and reading_unit != expected_unit:
             errors.append(f"reading_unit {reading_unit} does not match expected unit {expected_unit}")
 
     parsed_timestamp = _parse_timestamp(record.get("timestamp"))
@@ -250,6 +256,8 @@ def read_raw_data(
                 "timestamp": parsed.get("timestamp"),
                 "reading_value": reading.get("value"),
                 "reading_unit": reading.get("unit"),
+                "badge_id": reading.get("badge_id"),
+                "access_granted": reading.get("access_granted"),
                 "firmware_version": parsed.get("firmware_version"),
                 "quality_flag": parsed.get("quality_flag", "OK"),
                 "ingestion_timestamp": parsed.get("ingestion_timestamp"),
@@ -294,8 +302,10 @@ def read_raw_data(
                     "plant_id": row["plant_id"],
                     "machine_id": row["machine_id"],
                     "timestamp": parsed_timestamp,
-                    "reading_value": float(row["reading_value"]),
+                    "reading_value": float(row["reading_value"]) if row["reading_value"] is not None else None,
                     "reading_unit": row["reading_unit"],
+                    "badge_id": row["badge_id"],
+                    "access_granted": row["access_granted"],
                     "firmware_version": row["firmware_version"],
                     "quality_flag": row["quality_flag"],
                     "ingestion_timestamp": ingestion_timestamp or now,
