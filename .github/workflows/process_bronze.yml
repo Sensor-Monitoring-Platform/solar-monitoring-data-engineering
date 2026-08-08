@@ -61,6 +61,10 @@ jobs:
       TIDB_PASSWORD:        ${{ secrets.TIDB_PASSWORD }}
       TIDB_DATABASE:        ${{ secrets.TIDB_DATABASE }}
 
+    defaults:
+      run:
+        working-directory: ./pipelines/bronze
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -92,8 +96,9 @@ jobs:
         run: python main.py
 
       - name: Load Bronze data into TiDB Cloud
+        working-directory: pipelines/bronze
         if: env.TIDB_HOST != ''
-        run: python pipelines/bronze/load_bronze_to_tidb.py
+        run: python load_bronze_to_tidb.py
 
       - name: Summary
         if: always()
