@@ -1,5 +1,16 @@
-# Bronze pipeline (pipelines/bronze/)
+# Generator (generators/simulate_sensors.py)
+# boto3>=1.36 pulls in a compatible botocore>=1.36 automatically, which is
+# required for the request_checksum_calculation / response_checksum_validation
+# Config options used in create_s3_client().
 boto3>=1.36.1
 PyYAML==6.0.1
+
+# Bronze pipeline (pipelines/bronze/)
 pyspark==3.5.1
 delta-spark==3.2.0
+
+# TiDB loader (scripts/load_bronze_to_tidb.py)
+deltalake>=0.18.0
+pandas>=2.2.0
+SQLAlchemy>=2.0.0
+PyMySQL>=1.1.0
