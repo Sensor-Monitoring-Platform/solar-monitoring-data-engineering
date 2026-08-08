@@ -9,8 +9,10 @@ PyYAML==6.0.1
 pyspark==3.5.1
 delta-spark==3.2.0
 
-# TiDB loader (scripts/load_bronze_to_tidb.py)
+
+# TiDB loader (pipelines/bronze//load_bronze_to_tidb.py)
 deltalake>=0.18.0
+deltalake[pyarrow]>=0.18.0
 pandas>=2.2.0
 SQLAlchemy>=2.0.0
 PyMySQL>=1.1.0
