@@ -93,7 +93,7 @@ jobs:
 
       - name: Load Bronze data into TiDB Cloud
         if: env.TIDB_HOST != ''
-        run: python scripts/load_bronze_to_tidb.py
+        run: python pipelines/bronze/load_bronze_to_tidb.py
 
       - name: Summary
         if: always()
