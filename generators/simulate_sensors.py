@@ -21,6 +21,7 @@ Environment Variables Required:
 """
 
 import argparse
+import copy
 import json
 import logging
 import os
@@ -64,6 +65,36 @@ LATE_ARRIVAL_MAX_SECONDS = 300
 
 # Device offline simulation
 DEVICE_OFFLINE_PROB = 0.005  # 0.5 % chance a device goes offline per batch
+
+# --- Corrupted / malformed data (data_generation.md, Enhancement 5) ---
+# Distinct from anomalies above: an anomaly is still a technically valid
+# reading (a spike is a real, well-formed number). Corruption below
+# produces structurally invalid records -- missing fields, wrong types,
+# unparseable JSON -- the kind of thing real sensor firmware bugs and
+# lossy connections actually produce, and what Bronze's quarantine path
+# exists to catch.
+CORRUPT_PROB = 0.01          # 1 % chance a reading is structurally corrupted
+DUPLICATE_EVENT_PROB = 0.02  # 2 % chance a valid reading is also sent twice
+
+_CORRUPTION_TYPES = [
+    "missing_required_field",
+    "invalid_data_type",
+    "incorrect_unit",
+    "unknown_sensor_type",
+    "future_timestamp",
+    "very_old_timestamp",
+    "unexpected_field",
+    "malformed_json",
+]
+
+
+class MalformedLine(str):
+    """
+    A batch entry that's a deliberately broken JSON fragment, not a dict.
+    json.dumps() can't produce genuinely invalid syntax, so this is written
+    verbatim into the NDJSON body instead of being serialized -- see
+    upload_batch() and _print_batch().
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +176,7 @@ class SensorSimulator:
 
         # --- access_control is event-driven, not numeric ---
         if device_type == "access_control":
-            return self._access_event(sensor, timestamp)
+            return self._maybe_corrupt(self._access_event(sensor, timestamp))
 
         if type_cfg is None or type_cfg.get("normal_range") is None:
             return None
@@ -178,7 +209,7 @@ class SensorSimulator:
 
         ingestion_ts = datetime.now(timezone.utc)
 
-        return {
+        record = {
             "device_id": device_id,
             "device_type": device_type,
             "plant_id": sensor["plant_id"],
@@ -192,6 +223,7 @@ class SensorSimulator:
             "quality_flag": quality_flag,
             "ingestion_timestamp": ingestion_ts.isoformat(),
         }
+        return self._maybe_corrupt(record)
 
     def _inject_anomaly(
         self, device_id: str, device_type: str, type_cfg: dict, value: float
@@ -245,6 +277,68 @@ class SensorSimulator:
             "quality_flag": "OK",
             "ingestion_timestamp": ingestion_ts.isoformat(),
         }
+
+    def _maybe_corrupt(self, record: dict):
+        """
+        With probability CORRUPT_PROB, turn an otherwise-valid record into
+        a structurally invalid one. Returns the record unchanged most of
+        the time, a mutated dict for most corruption types, or a
+        MalformedLine (truncated JSON text) for the malformed_json case.
+        """
+        if random.random() >= CORRUPT_PROB:
+            return record
+
+        corruption_type = random.choice(_CORRUPTION_TYPES)
+        device_id = record.get("device_id")
+        record = copy.deepcopy(record)
+
+        if corruption_type == "missing_required_field":
+            field = random.choice(["device_id", "device_type", "plant_id", "machine_id", "timestamp"])
+            record.pop(field, None)
+            record["quality_flag"] = "CORRUPTED"
+
+        elif corruption_type == "invalid_data_type":
+            record.setdefault("reading", {})["value"] = random.choice(["ABC", "N/A", "ERROR"])
+            record["quality_flag"] = "CORRUPTED"
+
+        elif corruption_type == "incorrect_unit":
+            wrong_units = ["fahrenheit", "kelvin", "psi", "rpm", "unknown"]
+            record.setdefault("reading", {})["unit"] = random.choice(wrong_units)
+            record["quality_flag"] = "CORRUPTED"
+
+        elif corruption_type == "unknown_sensor_type":
+            record["device_type"] = f"{record.get('device_type', 'unknown')}_xyz"
+            record["quality_flag"] = "CORRUPTED"
+
+        elif corruption_type == "future_timestamp":
+            future = datetime.now(timezone.utc) + timedelta(days=random.randint(3000, 4000))
+            record["timestamp"] = future.isoformat()
+            record["quality_flag"] = "CORRUPTED"
+
+        elif corruption_type == "very_old_timestamp":
+            past = datetime.now(timezone.utc) - timedelta(days=random.randint(3000, 5000))
+            record["timestamp"] = past.isoformat()
+            record["quality_flag"] = "CORRUPTED"
+
+        elif corruption_type == "unexpected_field":
+            # Simulates new firmware sending fields Bronze doesn't know
+            # about yet -- this should be accepted via schema evolution,
+            # not quarantined, so quality_flag deliberately stays "OK".
+            record["firmware_build"] = (
+                f"{random.randint(2024, 2026)}.{random.randint(1, 12):02d}.{random.randint(1, 28):02d}"
+            )
+            record["calibration_status"] = random.choice(["VALID", "PENDING", "EXPIRED"])
+
+        elif corruption_type == "malformed_json":
+            # Truncate a valid JSON fragment mid-way -- json.dumps can't
+            # produce genuinely broken syntax, so build it and cut it.
+            fragment = json.dumps(record, default=str)
+            cut_point = random.randint(10, max(11, len(fragment) - 10))
+            log.debug("Injected malformed_json into reading from %s", device_id)
+            return MalformedLine(fragment[:cut_point])
+
+        log.debug("Injected corruption '%s' into reading from %s", corruption_type, device_id)
+        return record
 
 
 # ---------------------------------------------------------------------------
@@ -313,12 +407,20 @@ def upload_batch(s3_client, bucket_name: str, readings: list[dict], batch_id: st
     )
     object_key = f"{partition_path}/{batch_id}.json"
 
-    # Stamp each record with its source file name
+    # Stamp each record with its source file name. MalformedLine entries
+    # are deliberately not valid JSON objects, so there's no key to set --
+    # skip them.
     for r in readings:
-        r["source_file_name"] = object_key
+        if isinstance(r, dict):
+            r["source_file_name"] = object_key
 
-    # NDJSON: one JSON object per line
-    body = "\n".join(json.dumps(r, default=str) for r in readings)
+    # NDJSON: one JSON object per line. MalformedLine entries are written
+    # verbatim -- they're intentionally broken JSON text, not a dict to
+    # serialize.
+    body = "\n".join(
+        r if isinstance(r, MalformedLine) else json.dumps(r, default=str)
+        for r in readings
+    )
 
     s3_client.put_object(
         Bucket=bucket_name,
@@ -395,6 +497,13 @@ def run(
             if reading is not None:
                 batch.append(reading)
 
+                # Simulate device/network retransmission -- an exact
+                # duplicate of a genuinely valid reading arriving twice.
+                # Skip already-malformed lines; duplicating garbage
+                # doesn't exercise anything new in Bronze's dedup logic.
+                if not isinstance(reading, MalformedLine) and random.random() < DUPLICATE_EVENT_PROB:
+                    batch.append(copy.deepcopy(reading))
+
                 # Flush when batch is full
                 if len(batch) >= batch_size:
                     batch_id = f"batch_{uuid.uuid4().hex[:12]}"
@@ -441,7 +550,10 @@ def _print_batch(batch: list[dict], batch_id: str):
     """Dry-run: print a batch to stdout."""
     print(f"\n--- Batch: {batch_id} ({len(batch)} readings) ---")
     for r in batch[:3]:  # show first 3
-        print(json.dumps(r, indent=2, default=str))
+        if isinstance(r, MalformedLine):
+            print(f"[MALFORMED_JSON] {r}")
+        else:
+            print(json.dumps(r, indent=2, default=str))
     if len(batch) > 3:
         print(f"  ... and {len(batch) - 3} more readings")
 
