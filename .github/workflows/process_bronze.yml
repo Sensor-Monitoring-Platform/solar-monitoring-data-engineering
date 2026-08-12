@@ -61,6 +61,10 @@ jobs:
       TIDB_PASSWORD:        ${{ secrets.TIDB_PASSWORD }}
       TIDB_DATABASE:        ${{ secrets.TIDB_DATABASE }}
 
+    defaults:
+      run:
+        working-directory: ./pipelines/bronze
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
