@@ -43,7 +43,7 @@ HF_SECRET_ACCESS_KEY = os.getenv("HF_SECRET_ACCESS_KEY")
 
 HF_S3_ENDPOINT = f"https://s3.hf.co/{HF_NAMESPACE}" if HF_NAMESPACE else None
 
-HF_BUCKET_NAME = os.getenv("HF_BUCKET_NAME", "iot-raw")
+HF_BUCKET_NAME = os.getenv("HF_BUCKET_NAME", "sensor-bucket")
 
 HF_RAW_PREFIX = os.getenv("HF_RAW_PREFIX", "raw/")
 

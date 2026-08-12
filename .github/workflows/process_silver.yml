@@ -1,0 +1,94 @@
+# ============================================================
+# GitHub Actions: Silver Layer Pipeline
+# ============================================================
+# Reads the Bronze Delta table from the Hugging Face bucket,
+# cleans/enriches/standardizes it, and writes the result as a
+# Delta table back to the same bucket (silver/ prefix).
+#
+# Required Repository Secrets (same ones process_bronze.yml uses):
+#   HF_ACCESS_KEY_ID     — Hugging Face S3 Access Key
+#   HF_SECRET_ACCESS_KEY — Hugging Face S3 Secret Key
+#   HF_NAMESPACE         — Your HF username or org name
+#   HF_BUCKET_NAME       — Name of your Storage Bucket
+# ============================================================
+
+name: Process Silver Layer
+
+on:
+  workflow_dispatch:
+    inputs:
+      processing_job_id:
+        description: "Identifier for this pipeline run"
+        required: false
+        default: ""
+
+  # Chain automatically after a successful Bronze run
+  workflow_run:
+    workflows: ["Process Bronze Layer"]
+    types:
+      - completed
+
+  schedule:
+    - cron: "30 */6 * * *"   # 30 min after the generator, 15 min after bronze
+
+jobs:
+  silver:
+    name: Run Silver Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: >
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    env:
+      HF_ACCESS_KEY_ID:     ${{ secrets.HF_ACCESS_KEY_ID }}
+      HF_SECRET_ACCESS_KEY: ${{ secrets.HF_SECRET_ACCESS_KEY }}
+      HF_NAMESPACE:         ${{ secrets.HF_NAMESPACE }}
+      HF_BUCKET_NAME:       ${{ secrets.HF_BUCKET_NAME }}
+      USE_HF_STORAGE:       "true"
+      PROCESSING_JOB_ID:    ${{ github.event.inputs.processing_job_id || github.run_id }}
+
+    defaults:
+      run:
+        working-directory: ./pipelines/silver
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java (required by Spark/Delta)
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate secrets are set
+        run: |
+          if [ -z "$HF_ACCESS_KEY_ID" ] || [ -z "$HF_SECRET_ACCESS_KEY" ] || [ -z "$HF_NAMESPACE" ]; then
+            echo "::error::Missing required secrets. Please set HF_ACCESS_KEY_ID, HF_SECRET_ACCESS_KEY, HF_NAMESPACE, and HF_BUCKET_NAME in repository Settings → Secrets."
+            exit 1
+          fi
+
+      - name: Run Silver pipeline
+        working-directory: pipelines/silver
+        run: python main.py
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🥈 Silver Layer Processing Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Processing Job ID | ${{ env.PROCESSING_JOB_ID }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bucket | ${{ env.HF_BUCKET_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY

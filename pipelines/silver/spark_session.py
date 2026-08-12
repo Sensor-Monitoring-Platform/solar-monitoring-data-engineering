@@ -16,6 +16,10 @@ def create_spark():
         .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        # See pipelines/bronze/spark_session.py for why -- same
+        # ChecksumException issue applies here since Silver also reads/
+        # writes local Delta tables synced to/from the HF bucket.
+        .config("spark.hadoop.fs.file.impl", "org.apache.hadoop.fs.RawLocalFileSystem")
     )
 
     # configure_spark_with_delta_pip pulls in the delta-core/delta-storage

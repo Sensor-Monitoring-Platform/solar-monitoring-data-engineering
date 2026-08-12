@@ -147,6 +147,21 @@ def parse_checkpoint_watermark(checkpoint: Optional[Dict]) -> Optional[datetime]
 # Delta table sync
 # ---------------------------------------------------------------------------
 
+def _is_checksum_sidecar(name: str) -> bool:
+    """
+    Hadoop's local filesystem writer creates a hidden .crc checksum
+    sidecar next to every file it writes (e.g. "_last_checkpoint" gets a
+    matching ".​_last_checkpoint.crc" in the same directory). These are a
+    local-filesystem integrity-verification artifact, not real Delta
+    table content, and syncing them to/from the bucket is how a stale
+    sidecar can end up paired with a newer data file across separate
+    runs -- which raises ChecksumException on read. RawLocalFileSystem
+    (see spark_session.py) means Spark no longer even looks at these, but
+    they're still worth never uploading/downloading in the first place.
+    """
+    return name.startswith(".") and name.endswith(".crc")
+
+
 def download_prefix(s3_client, bucket: str, prefix: str, local_dir: str) -> int:
     """
     Download every object under `prefix` into `local_dir`, preserving the
@@ -162,7 +177,7 @@ def download_prefix(s3_client, bucket: str, prefix: str, local_dir: str) -> int:
     count = 0
     for key in list_objects(s3_client, bucket, prefix):
         relative = key[len(prefix):].lstrip("/")
-        if not relative:
+        if not relative or _is_checksum_sidecar(Path(relative).name):
             continue
         dest = local_root / relative
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -187,7 +202,7 @@ def upload_directory(s3_client, bucket: str, local_dir: str, prefix: str) -> int
         return 0
     count = 0
     for path in local_root.rglob("*"):
-        if path.is_file():
+        if path.is_file() and not _is_checksum_sidecar(path.name):
             key = f"{prefix.rstrip('/')}/{path.relative_to(local_root).as_posix()}"
             s3_client.upload_file(str(path), bucket, key)
             count += 1

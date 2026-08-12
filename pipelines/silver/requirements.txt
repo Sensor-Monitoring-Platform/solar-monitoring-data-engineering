@@ -1,2 +1,10 @@
 pyspark==3.5.1
 pyyaml==6.0.2
+
+# spark_session.py imports `from delta import configure_spark_with_delta_pip`
+# directly -- this was missing from the original file, which means the
+# pipeline would fail with ModuleNotFoundError before main() ever runs.
+delta-spark==3.2.0
+
+# For hf_storage.py's S3-compatible bucket client.
+boto3>=1.36.1

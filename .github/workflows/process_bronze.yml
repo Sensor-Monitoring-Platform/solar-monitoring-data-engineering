@@ -43,7 +43,7 @@ jobs:
   bronze:
     name: Run Bronze Pipeline
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     if: >
       github.event_name != 'workflow_run' ||
       github.event.workflow_run.conclusion == 'success'
@@ -97,11 +97,11 @@ jobs:
 
       - name: Load Bronze data into TiDB Cloud
         if: env.TIDB_HOST != ''
-        run: python scripts/load_bronze_to_tidb.py --table bronze
+        run: python load_bronze_to_tidb.py --table bronze
 
       - name: Load Quarantine data into TiDB Cloud
         if: env.TIDB_HOST != ''
-        run: python scripts/load_bronze_to_tidb.py --table quarantine
+        run: python load_bronze_to_tidb.py --table quarantine
 
       - name: Summary
         if: always()

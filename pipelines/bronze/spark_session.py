@@ -16,6 +16,18 @@ def create_spark():
         .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        # Hadoop's default LocalFileSystem wraps every local read/write with
+        # a checksum verification layer (.crc sidecar files) -- meant for
+        # HDFS-style distributed reliability, not a single ephemeral CI
+        # runner whose disk is already trustworthy for the few minutes a
+        # job runs. Those .crc files get uploaded to the bucket alongside
+        # real Delta files (see hf_storage.upload_directory), and if a
+        # sidecar and its data file ever land out of sync -- two runs
+        # overlapping, a checkpoint file rewritten between uploads -- Spark
+        # raises ChecksumException and retries the failing task repeatedly
+        # instead of failing fast. RawLocalFileSystem skips checksumming
+        # entirely, which is the standard fix for this class of issue.
+        .config("spark.hadoop.fs.file.impl", "org.apache.hadoop.fs.RawLocalFileSystem")
     )
 
     # configure_spark_with_delta_pip pulls in the delta-core/delta-storage
