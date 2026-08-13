@@ -33,6 +33,18 @@ HF_BUCKET_NAME = os.getenv("HF_BUCKET_NAME", "iot-raw")
 HF_BRONZE_PREFIX = os.getenv("HF_BRONZE_PREFIX", "bronze/")
 HF_SILVER_PREFIX = os.getenv("HF_SILVER_PREFIX", "silver/")
 
+HF_CHECKPOINT_PREFIX = os.getenv("HF_CHECKPOINT_PREFIX", "checkpoint/")
+
+# Bronze's own checkpoint (must match pipelines/bronze/config.py's
+# HF_CHECKPOINT_KEY exactly -- Silver reads it, never writes it) is the
+# signal for "has there been anything new since Silver last ran". Silver
+# doesn't track its own row-level watermark -- see main.py for why a
+# full rebuild is unavoidable here, unlike Bronze's incremental reads.
+HF_BRONZE_CHECKPOINT_KEY = f"{HF_CHECKPOINT_PREFIX}bronze_watermark.json"
+HF_SILVER_CHECKPOINT_KEY = f"{HF_CHECKPOINT_PREFIX}silver_watermark.json"
+
+PROCESSING_JOB_ID = os.getenv("PROCESSING_JOB_ID", "local-run")
+
 # ------------------------
 # Spark
 # ------------------------

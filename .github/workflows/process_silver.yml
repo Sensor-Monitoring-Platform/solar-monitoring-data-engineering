@@ -5,11 +5,12 @@
 # cleans/enriches/standardizes it, and writes the result as a
 # Delta table back to the same bucket (silver/ prefix).
 #
-# Required Repository Secrets (same ones process_bronze.yml uses):
+# Required Repository Secrets (same ones process_bronze.yml uses, plus TiDB):
 #   HF_ACCESS_KEY_ID     — Hugging Face S3 Access Key
 #   HF_SECRET_ACCESS_KEY — Hugging Face S3 Secret Key
 #   HF_NAMESPACE         — Your HF username or org name
 #   HF_BUCKET_NAME       — Name of your Storage Bucket
+#   TIDB_HOST / TIDB_PORT / TIDB_USER / TIDB_PASSWORD / TIDB_DATABASE
 # ============================================================
 
 name: Process Silver Layer
@@ -47,6 +48,11 @@ jobs:
       HF_BUCKET_NAME:       ${{ secrets.HF_BUCKET_NAME }}
       USE_HF_STORAGE:       "true"
       PROCESSING_JOB_ID:    ${{ github.event.inputs.processing_job_id || github.run_id }}
+      TIDB_HOST:            ${{ secrets.TIDB_HOST }}
+      TIDB_PORT:            ${{ secrets.TIDB_PORT }}
+      TIDB_USER:            ${{ secrets.TIDB_USER }}
+      TIDB_PASSWORD:        ${{ secrets.TIDB_PASSWORD }}
+      TIDB_DATABASE:        ${{ secrets.TIDB_DATABASE }}
 
     defaults:
       run:
@@ -82,6 +88,10 @@ jobs:
         working-directory: pipelines/silver
         run: python main.py
 
+      - name: Load Silver data into TiDB Cloud
+        if: env.TIDB_HOST != ''
+        run: python load_silver_to_tidb.py
+
       - name: Summary
         if: always()
         run: |
@@ -92,3 +102,4 @@ jobs:
           echo "| Processing Job ID | ${{ env.PROCESSING_JOB_ID }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Bucket | ${{ env.HF_BUCKET_NAME }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Triggered by | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| TiDB load | ${{ env.TIDB_HOST != '' && 'attempted' || 'skipped (no TIDB_HOST secret)' }} |" >> $GITHUB_STEP_SUMMARY
