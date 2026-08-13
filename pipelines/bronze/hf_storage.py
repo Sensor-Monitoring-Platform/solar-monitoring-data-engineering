@@ -186,24 +186,33 @@ def download_prefix(s3_client, bucket: str, prefix: str, local_dir: str) -> int:
     return count
 
 
-def upload_directory(s3_client, bucket: str, local_dir: str, prefix: str) -> int:
+def upload_directory(
+    s3_client, bucket: str, local_dir: str, prefix: str, modified_after: Optional[float] = None
+) -> int:
     """
     Upload every file under `local_dir` to `bucket` under `prefix`,
     preserving relative structure (including _delta_log/).
 
-    Note: this re-uploads the whole local table on every run rather than
-    diffing against what's already in the bucket. Simple and correct at
-    portfolio scale; for a much larger table, upload only files newer than
-    the last download, or mount the bucket with an S3A/Hadoop connector
-    instead of this download/upload wrapper.
+    If `modified_after` is given (a time.time()-style unix timestamp),
+    only files with an mtime strictly newer than it are uploaded. Files
+    downloaded by download_prefix() get an mtime of "now" the moment
+    they land on disk; if the caller captures a cutoff right after that
+    download finishes, everything untouched by this run's Spark write
+    keeps its pre-run mtime and gets skipped -- so old, unchanged
+    partitions stop getting re-uploaded (and their "Uploaded" timestamp
+    refreshed) on every single run. Without this, the entire local table
+    gets re-PUT every run regardless of what actually changed.
     """
     local_root = Path(local_dir)
     if not local_root.exists():
         return 0
     count = 0
     for path in local_root.rglob("*"):
-        if path.is_file() and not _is_checksum_sidecar(path.name):
-            key = f"{prefix.rstrip('/')}/{path.relative_to(local_root).as_posix()}"
-            s3_client.upload_file(str(path), bucket, key)
-            count += 1
+        if not path.is_file() or _is_checksum_sidecar(path.name):
+            continue
+        if modified_after is not None and path.stat().st_mtime <= modified_after:
+            continue
+        key = f"{prefix.rstrip('/')}/{path.relative_to(local_root).as_posix()}"
+        s3_client.upload_file(str(path), bucket, key)
+        count += 1
     return count

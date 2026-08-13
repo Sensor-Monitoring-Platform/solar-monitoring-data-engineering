@@ -8,7 +8,7 @@ Silver reads the FULL Bronze table and does a full overwrite every run
 """
 
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Optional
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -82,18 +82,31 @@ def download_prefix(s3_client, bucket: str, prefix: str, local_dir: str) -> int:
     return count
 
 
-def upload_directory(s3_client, bucket: str, local_dir: str, prefix: str) -> int:
+def upload_directory(
+    s3_client, bucket: str, local_dir: str, prefix: str, modified_after: Optional[float] = None
+) -> int:
     """
     Upload every file under `local_dir` to `bucket` under `prefix`,
     preserving relative structure (including _delta_log/).
+
+    If `modified_after` is given, only files with an mtime strictly newer
+    than it are uploaded -- see pipelines/bronze/hf_storage.py for the
+    full explanation. Silver does a full mode("overwrite") each run, so
+    most files genuinely are new, but old _delta_log commit/checkpoint
+    files from many runs back (Delta doesn't delete superseded files
+    until a VACUUM) would otherwise still get needlessly re-uploaded
+    every time.
     """
     local_root = Path(local_dir)
     if not local_root.exists():
         return 0
     count = 0
     for path in local_root.rglob("*"):
-        if path.is_file() and not _is_checksum_sidecar(path.name):
-            key = f"{prefix.rstrip('/')}/{path.relative_to(local_root).as_posix()}"
-            s3_client.upload_file(str(path), bucket, key)
-            count += 1
+        if not path.is_file() or _is_checksum_sidecar(path.name):
+            continue
+        if modified_after is not None and path.stat().st_mtime <= modified_after:
+            continue
+        key = f"{prefix.rstrip('/')}/{path.relative_to(local_root).as_posix()}"
+        s3_client.upload_file(str(path), bucket, key)
+        count += 1
     return count
