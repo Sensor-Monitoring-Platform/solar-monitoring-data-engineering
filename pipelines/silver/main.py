@@ -74,9 +74,17 @@ def main():
     # table -- correct for this pipeline's dedup/rolling-window/streak
     # logic, which all need the full device history to be right, not
     # just what's new since last run.
-    silver_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").partitionBy(
-        "event_year", "event_month", "event_day", "plant_id"
-    ).save(SILVER_OUTPUT_PATH)
+    # Delta forbids combining overwriteSchema with the session's dynamic
+    # partitionOverwriteMode (set in spark_session.py, which matters for
+    # Bronze's appends but not here) -- ambiguous whether a schema change
+    # applies to the whole table or just the touched partitions, so Delta
+    # refuses rather than guess. Overriding to static here is also the
+    # correct semantic anyway: Silver rebuilds fully from the complete
+    # Bronze table every run, so the whole table should be replaced, not
+    # just whichever partitions happened to appear in this run's data.
+    silver_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").option(
+        "partitionOverwriteMode", "static"
+    ).partitionBy("event_year", "event_month", "event_day", "plant_id").save(SILVER_OUTPUT_PATH)
 
     log(f"Silver output written to {SILVER_OUTPUT_PATH}")
     log(f"Silver records: {silver_df.count()}")
