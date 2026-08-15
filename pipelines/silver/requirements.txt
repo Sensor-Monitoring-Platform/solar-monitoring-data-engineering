@@ -8,3 +8,10 @@ delta-spark==3.2.0
 
 # For hf_storage.py's S3-compatible bucket client.
 boto3>=1.36.1
+
+# TiDB loader
+deltalake>=0.18.0
+deltalake[pyarrow]>=0.18.0
+pandas>=2.2.0
+SQLAlchemy>=2.0.0
+PyMySQL>=1.1.0
