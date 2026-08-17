@@ -1,3 +1,5 @@
+import time
+
 from pyspark.sql.functions import col, dayofmonth, hour, month, to_timestamp, year
 
 try:
@@ -81,6 +83,13 @@ def main():
 
         n = download_prefix(s3_client, HF_BUCKET_NAME, HF_QUARANTINE_PREFIX, QUARANTINE_PATH)
         log(f"Restored {n} existing quarantine Delta file(s) from HF bucket")
+
+        # Everything downloaded above now sits on disk with an mtime of
+        # "now". Capturing the cutoff here, before any Spark write
+        # happens, means upload_directory() can later tell "existed
+        # before this run" apart from "created or overwritten by this
+        # run's append" -- see hf_storage.upload_directory.
+        sync_cutoff = time.time()
 
         # Watermark: only look at raw objects uploaded after the last
         # successful run. Without this, every run re-lists and re-validates
@@ -174,10 +183,10 @@ def main():
 
     if USE_HF_STORAGE:
         log("Syncing Bronze Delta table back to Hugging Face bucket...")
-        n = upload_directory(s3_client, HF_BUCKET_NAME, BRONZE_OUTPUT_PATH, HF_BRONZE_PREFIX)
+        n = upload_directory(s3_client, HF_BUCKET_NAME, BRONZE_OUTPUT_PATH, HF_BRONZE_PREFIX, modified_after=sync_cutoff)
         log(f"Uploaded {n} Bronze file(s) -> s3://{HF_BUCKET_NAME}/{HF_BRONZE_PREFIX}")
 
-        n = upload_directory(s3_client, HF_BUCKET_NAME, QUARANTINE_PATH, HF_QUARANTINE_PREFIX)
+        n = upload_directory(s3_client, HF_BUCKET_NAME, QUARANTINE_PATH, HF_QUARANTINE_PREFIX, modified_after=sync_cutoff)
         log(f"Uploaded {n} quarantine file(s) -> s3://{HF_BUCKET_NAME}/{HF_QUARANTINE_PREFIX}")
 
         # Only advance the checkpoint after the writes and uploads above
