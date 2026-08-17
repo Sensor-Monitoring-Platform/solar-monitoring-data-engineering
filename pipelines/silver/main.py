@@ -94,6 +94,17 @@ def main():
 
     silver_df = silver_df.withColumn("processing_timestamp", F.current_timestamp())
 
+    # Enforce the SILVER_OUTPUT_SCHEMA contract exactly. prepare_silver's
+    # transformations only ever add or rename columns -- nothing in the
+    # pipeline drops bronze-origin passthrough columns (is_corrupt,
+    # error_reason, bronze_version, record_hash, processing_job_id,
+    # ingestion_timestamp, badge_id, access_granted, Bronze's own
+    # year/month/day/hour), so without this select they were silently
+    # riding into the Delta table even though schemas.py never declared
+    # them. schema_manager only flags MISSING expected columns, never
+    # unexpected extra ones, so this went undetected until now.
+    silver_df = silver_df.select(*[f.name for f in SILVER_OUTPUT_SCHEMA.fields])
+
     schema_manager = SchemaManager(SILVER_OUTPUT_SCHEMA)
     schema_report = schema_manager.generate_report(silver_df)
     if schema_report["missing_columns"] or schema_report["type_changes"]:
