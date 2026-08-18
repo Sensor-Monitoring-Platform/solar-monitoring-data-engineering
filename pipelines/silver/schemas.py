@@ -53,7 +53,6 @@ SILVER_OUTPUT_SCHEMA = StructType(
         StructField("machine_type", StringType(), True),
         StructField("manufacturer", StringType(), True),
         StructField("firmware_version", StringType(), True),
-        StructField("quality_flag", StringType(), True),
         StructField("timestamp", TimestampType(), True),
         StructField("event_date", StringType(), True),
         StructField("event_hour", IntegerType(), True),
@@ -81,7 +80,6 @@ SILVER_OUTPUT_SCHEMA = StructType(
         StructField("reading_acceleration", DoubleType(), True),
         StructField("consecutive_nulls", IntegerType(), True),
         StructField("consecutive_outliers", IntegerType(), True),
-        StructField("source_file_name", StringType(), True),
         StructField("processing_timestamp", TimestampType(), True),
     ]
 )
