@@ -1,8 +1,4 @@
----
-# ============================================================
-# Manufacturing IoT Device Topology
-# Plants → Production Lines → Machines → Sensors
-# ============================================================
+# Manufacturing IoT Device Topology (Plants → Production Lines → Machines → Sensors)
 
 plants:
   - plant_id: "PLT-GGN-01"

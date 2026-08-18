@@ -1,8 +1,4 @@
----
-# ============================================================
-# Sensor Type Configuration
-# Defines valid ranges, thresholds, anomaly behaviour per type
-# ============================================================
+# Sensor Type Configuration (Defines valid ranges, thresholds, anomaly behaviour per type)
 
 sensor_types:
   temperature_process:

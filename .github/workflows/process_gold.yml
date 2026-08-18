@@ -1,0 +1,146 @@
+# ============================================================
+# GitHub Actions: Gold Layer Pipeline
+# ============================================================
+# Reads the Silver Delta table from Hugging Face storage,
+# builds dimensional + fact tables, validates the Gold data,
+# and writes the final Gold layer back to Hugging Face.
+#
+# Gold modeling:
+#   dim_sensor
+#   dim_date
+#   fact_sensor_reading_daily
+#   fact_sensor_health_daily
+#   fact_machine_daily
+#
+# Required Repository Secrets:
+#   HF_ACCESS_KEY_ID
+#   HF_SECRET_ACCESS_KEY
+#   HF_NAMESPACE
+#   HF_BUCKET_NAME
+# ============================================================
+
+name: Process Gold Layer
+
+on:
+  workflow_dispatch:
+    inputs:
+      processing_job_id:
+        description: "Identifier for this pipeline run"
+        required: false
+        default: ""
+
+  # Chain automatically after a successful Silver run
+  workflow_run:
+    workflows: ["Process Silver Layer"]
+    types:
+      - completed
+
+  # Independent safety-net schedule
+  schedule:
+    - cron: "45 */6 * * *"   # 15 min after Silver
+
+jobs:
+  gold:
+    name: Run Gold Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    if: >
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    env:
+      HF_ACCESS_KEY_ID: ${{ secrets.HF_ACCESS_KEY_ID }}
+      HF_SECRET_ACCESS_KEY: ${{ secrets.HF_SECRET_ACCESS_KEY }}
+      HF_NAMESPACE: ${{ secrets.HF_NAMESPACE }}
+      HF_BUCKET_NAME: ${{ secrets.HF_BUCKET_NAME }}
+
+      USE_HF_STORAGE: "true"
+
+      PROCESSING_JOB_ID: ${{ github.event.inputs.processing_job_id || github.run_id }}
+
+      # Gold storage
+      HF_GOLD_PREFIX: "gold/"
+      HF_CHECKPOINT_PREFIX: "checkpoint/"
+
+      # Gold processing
+      GOLD_WRITE_MODE: "overwrite"
+      GOLD_TIME_GRANULARITY: "hour"
+      GOLD_LOOKBACK_DAYS: "0"
+
+      # Spark
+      PYSPARK_PYTHON: python3
+      PYSPARK_DRIVER_PYTHON: python3
+
+    defaults:
+      run:
+        working-directory: ./pipelines/gold
+
+    steps:
+
+      # --------------------------------------------------------
+      # Checkout
+      # --------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # --------------------------------------------------------
+      # Java - required by Spark / Delta
+      # --------------------------------------------------------
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      # --------------------------------------------------------
+      # Python
+      # --------------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # --------------------------------------------------------
+      # Dependencies
+      # --------------------------------------------------------
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # --------------------------------------------------------
+      # Validate required secrets
+      # --------------------------------------------------------
+      - name: Validate secrets are set
+        run: |
+          if [ -z "$HF_ACCESS_KEY_ID" ] || \
+             [ -z "$HF_SECRET_ACCESS_KEY" ] || \
+             [ -z "$HF_NAMESPACE" ] || \
+             [ -z "$HF_BUCKET_NAME" ]; then
+
+            echo "::error::Missing required Hugging Face secrets."
+            echo "::error::Required: HF_ACCESS_KEY_ID, HF_SECRET_ACCESS_KEY, HF_NAMESPACE, HF_BUCKET_NAME"
+            exit 1
+          fi
+
+      # --------------------------------------------------------
+      # Run Gold pipeline
+      # --------------------------------------------------------
+      - name: Run Gold pipeline
+        run: python main.py
+
+      # --------------------------------------------------------
+      # Summary
+      # --------------------------------------------------------
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🥇 Gold Layer Processing Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Processing Job ID | ${{ env.PROCESSING_JOB_ID }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bucket | ${{ env.HF_BUCKET_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Gold Prefix | ${{ env.HF_GOLD_PREFIX }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Checkpoint | ${{ env.HF_CHECKPOINT_PREFIX }}gold_watermark.json |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY

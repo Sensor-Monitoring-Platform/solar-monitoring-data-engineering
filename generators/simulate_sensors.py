@@ -12,12 +12,6 @@ Usage:
 
     # GitHub Actions (env vars come from secrets)
     python simulate_sensors.py --duration-minutes 5 --batch-size 500
-
-Environment Variables Required:
-    HF_ACCESS_KEY_ID      — Hugging Face S3 Access Key (starts with HFAK...)
-    HF_SECRET_ACCESS_KEY  — Hugging Face S3 Secret Key
-    HF_NAMESPACE          — Your HF username or org name
-    HF_BUCKET_NAME        — Name of your Storage Bucket (e.g. "iot-raw")
 """
 
 import argparse
@@ -29,12 +23,11 @@ import random
 import sys
 import time
 import uuid
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
-
 import boto3
 import yaml
+from pathlib import Path
 from botocore.config import Config as BotoConfig
+from datetime import datetime, timezone, timedelta
 
 # ---------------------------------------------------------------------------
 # Logging
