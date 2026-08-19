@@ -46,15 +46,10 @@ from validations import (
     validate_fact,
 )
 
-# Per-table local Delta paths, derived from the single GOLD_OUTPUT_PATH
-# config value -- config.py deliberately only defines the base directory,
-# not one constant per table, so this mapping lives here instead.
 GOLD_TABLE_PATHS = {
     name: str(Path(GOLD_OUTPUT_PATH) / name) for name in GOLD_SCHEMAS
 }
 
-# Business key per table, used both for grain validation and to decide
-# validate_fact vs validate_dimension.
 GOLD_TABLE_KEYS = {
     "dim_sensor": ("dimension", "sensor_key"),
     "dim_date": ("dimension", "date_key"),
@@ -69,48 +64,45 @@ DEFAULT_END_DATE = "2026-12-31"
 
 def _apply_lookback(silver):
     """
-    Restrict Silver to the trailing GOLD_LOOKBACK_DAYS days (inclusive of
-    the max event_date present), when configured. GOLD_LOOKBACK_DAYS=0
-    means "no limit -- use all available Silver history", matching
-    config.py's own comment.
+    Restrict Silver to the trailing GOLD_LOOKBACK_DAYS days, when
+    configured. GOLD_LOOKBACK_DAYS=0 means "no limit".
+
+    Real Silver's event_date is StringType (see silver/schemas.py), not
+    DateType -- we explicitly F.to_date(...) it inside the aggregation so
+    .collect() reliably hands back a Python `datetime.date` regardless of
+    the column's declared type, avoiding a `str - timedelta` TypeError.
     """
     if GOLD_LOOKBACK_DAYS <= 0:
         return silver
 
-    max_date = silver.agg(F.max("event_date")).collect()[0][0]
+    max_date = silver.agg(F.max(F.to_date(F.col("event_date")))).collect()[0][0]
     if max_date is None:
         return silver
 
     cutoff = max_date - timedelta(days=GOLD_LOOKBACK_DAYS - 1)
     log(f"GOLD_LOOKBACK_DAYS={GOLD_LOOKBACK_DAYS} -- restricting Silver to event_date >= {cutoff.isoformat()}")
-    return silver.filter(F.col("event_date") >= F.lit(cutoff))
+    return silver.filter(F.to_date(F.col("event_date")) >= F.lit(cutoff))
 
 
 def _get_silver_date_range(silver) -> tuple[str, str]:
     """
     Return (start_date, end_date) as "yyyy-MM-dd" strings, for build_dim_date().
 
-    IMPORTANT: we deliberately do NOT rely on the Python type that
-    .collect() hands back for a DateType column (datetime.date vs str
-    is not guaranteed consistent across Spark versions / Arrow-collect
-    settings / how the source Parquet stored the value -- this is
-    exactly what caused a prior AttributeError: 'str' object has no
-    attribute 'isoformat'). Instead we force the value to a string
-    INSIDE Spark via F.date_format, so the Python side always receives
-    a plain str in "yyyy-MM-dd" format, with no ambiguity about type.
+    F.to_date(...) first normalizes event_date to a real date type
+    regardless of whether the underlying column is StringType or
+    DateType, then F.date_format(...) forces the result to a plain
+    string before it leaves Spark -- so the Python side never has to
+    guess what type .collect() handed back.
     """
     row = silver.agg(
-        F.date_format(F.min(F.col("event_date")), "yyyy-MM-dd").alias("min_date"),
-        F.date_format(F.max(F.col("event_date")), "yyyy-MM-dd").alias("max_date"),
+        F.date_format(F.min(F.to_date(F.col("event_date"))), "yyyy-MM-dd").alias("min_date"),
+        F.date_format(F.max(F.to_date(F.col("event_date"))), "yyyy-MM-dd").alias("max_date"),
     ).collect()[0]
 
     start_date = row["min_date"]
     end_date = row["max_date"]
 
     if start_date is None or end_date is None:
-        # Every event_date was null (shouldn't happen given the
-        # earlier isEmpty() check, but guard anyway) -- fall back
-        # rather than crash on date.fromisoformat(None).
         log(
             "Silver has rows but no non-null event_date values -- "
             f"falling back to default date range {DEFAULT_START_DATE}..{DEFAULT_END_DATE}."
@@ -121,24 +113,8 @@ def _get_silver_date_range(silver) -> tuple[str, str]:
 
 
 def _write_table(df, name: str):
-    """
-    Enforce the declared GOLD_SCHEMAS contract for this table, then write
-    it to its own local Delta path under GOLD_OUTPUT_PATH.
-
-    Full overwrite per table (GOLD_WRITE_MODE, default "overwrite"): every
-    Gold table here is a complete re-derivation from Silver each run
-    (dim_sensor is SCD1 over the whole device topology; every fact is a
-    full re-aggregation), so there is no meaningful incremental write.
-    """
     expected_columns = [f.name for f in GOLD_SCHEMAS[name].fields]
-
-    # Friendlier error than a bare AnalysisException if a fact/dimension
-    # function silently dropped or renamed a column upstream.
     require_columns(df, expected_columns, name)
-
-    # Enforce exact column set + order, and drop anything extra that
-    # rode along -- schema drift should fail loudly, not silently ride
-    # into the Delta table.
     df = df.select(*expected_columns)
 
     writer = df.write.format("delta").mode(GOLD_WRITE_MODE)
@@ -158,11 +134,6 @@ def main():
         log("Connecting to Hugging Face storage bucket...")
         s3_client = create_s3_client()
 
-        # Run-level checkpoint check, before Spark starts: if Silver's
-        # watermark hasn't moved since Gold's own checkpoint recorded,
-        # there's nothing new to rebuild five tables from, so skip the
-        # entire run rather than pay for JVM startup + a full Silver
-        # download only to recompute identical tables.
         silver_checkpoint = read_checkpoint(s3_client, HF_BUCKET_NAME, HF_SILVER_CHECKPOINT_KEY)
         silver_watermark = parse_checkpoint_watermark(silver_checkpoint)
 
@@ -221,7 +192,9 @@ def main():
         health_fact = fact_sensor_health_daily(silver)
 
         log("Building fact_machine_daily...")
-        machine_fact = fact_machine_daily(silver, device_df, health_fact)
+        # device_df no longer passed -- real Silver already carries
+        # machine_name/machine_type/production_line/plant_id directly.
+        machine_fact = fact_machine_daily(silver, health_fact)
 
         tables = {
             "dim_sensor": dim_sensor,
@@ -231,8 +204,6 @@ def main():
             "fact_machine_daily": machine_fact,
         }
 
-        # Validate grain/nullability BEFORE writing anything, so a bad
-        # table can't get partially synced to HF.
         log("Validating dimensions and facts...")
         for name, df in tables.items():
             kind, keys = GOLD_TABLE_KEYS[name]
@@ -258,10 +229,6 @@ def main():
                 log(f"Uploaded {n} file(s) for {name} -> s3://{HF_BUCKET_NAME}/{prefix}")
                 total_files += n
 
-            # Only record the checkpoint after every table's write AND
-            # upload has succeeded -- if any failed, the next run should
-            # retry a full rebuild rather than think this Silver
-            # watermark is already reflected in Gold when it isn't.
             write_checkpoint(
                 s3_client,
                 HF_BUCKET_NAME,

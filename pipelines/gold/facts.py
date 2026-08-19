@@ -2,8 +2,32 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
 
+def _resolve_timestamp_column(df: DataFrame) -> str:
+    """
+    Real Silver data (produced by Silver's transformations.py) names this
+    column `timestamp` (see silver/schemas.py SILVER_OUTPUT_SCHEMA). Some
+    earlier Gold code assumed `event_timestamp`, which never existed on
+    real Silver output -- that mismatch is what caused the
+    UNRESOLVED_COLUMN crash. Resolving the name at runtime means a future
+    rename fails with a clear, actionable message instead of a raw
+    AnalysisException.
+    """
+    for candidate in ("timestamp", "event_timestamp"):
+        if candidate in df.columns:
+            return candidate
+
+    raise ValueError(
+        "Silver DataFrame has neither `timestamp` nor `event_timestamp` "
+        f"column. Available columns: {df.columns}. Check that Silver's "
+        "transformations.py output and schemas.SILVER_INPUT_SCHEMA agree "
+        "on the reading-timestamp column name."
+    )
+
+
 def fact_sensor_reading_daily(silver: DataFrame) -> DataFrame:
     """Daily analytical summary: one row per sensor/day."""
+    ts_col = _resolve_timestamp_column(silver)
+
     return (
         silver
         .groupBy("device_id", "event_date")
@@ -39,8 +63,8 @@ def fact_sensor_reading_daily(silver: DataFrame) -> DataFrame:
 
             F.first("device_type").alias("device_type"),
             F.first("machine_id").alias("machine_id"),
-            F.min("event_timestamp").alias("first_reading_timestamp"),
-            F.max("event_timestamp").alias("last_reading_timestamp"),
+            F.min(ts_col).alias("first_reading_timestamp"),
+            F.max(ts_col).alias("last_reading_timestamp"),
         )
         .withColumn("date_key", F.date_format("event_date", "yyyyMMdd").cast("int"))
         .withColumn("sensor_key", F.xxhash64(F.col("device_id")).cast("long"))
@@ -155,45 +179,34 @@ def fact_sensor_health_daily(silver: DataFrame) -> DataFrame:
 
 def fact_machine_daily(
     silver: DataFrame,
-    device_df: DataFrame,
     health_fact: DataFrame,
 ) -> DataFrame:
     """
     Daily machine summary: one row per machine/day.
 
-    Design notes:
-      - machine_id alone is not on the raw Silver schema's descriptive
-        attributes (plant_id, machine_name, ...), so we explicitly join
-        device_df here instead of relying on the caller to have already
-        enriched `silver`.
-      - Completeness, health score, and per-sensor-status counts are
-        rolled up FROM fact_sensor_health_daily rather than recomputed
-        independently, so sensor-grain and machine-grain numbers stay
-        consistent with each other.
-      - Physical measurement metrics (temperature/vibration/pressure/
-        current) still come straight from Silver, since health_fact
-        doesn't carry reading values.
+    NOTE ON REDESIGN: this no longer takes/joins device_df. Real Silver
+    output already carries machine_name, machine_type, production_line,
+    and plant_id directly (Silver's own enrich_with_metadata() puts them
+    there -- see silver/schemas.py SILVER_OUTPUT_SCHEMA). The previous
+    version re-joined device_df for these same columns, which produced
+    TWO columns with each of those names on the joined DataFrame --
+    tolerated by Spark right up until F.first("machine_name") inside
+    .agg(), which then failed with "Reference 'machine_name' is
+    ambiguous". Reading them straight off `silver` removes both the
+    redundant join and that whole class of bug.
+
+    Completeness, health score, and per-sensor-status counts are rolled
+    up FROM fact_sensor_health_daily rather than recomputed independently,
+    so sensor-grain and machine-grain numbers stay consistent with each
+    other.
     """
 
-    machine_attrs = (
-        device_df
-        .select(
-            "machine_id",
-            "machine_name",
-            "machine_type",
-            "production_line",
-            "plant_id",
-        )
-        .dropDuplicates(["machine_id"])
-    )
-
-    enriched = silver.join(machine_attrs, "machine_id", "left")
-
     # ------------------------------------------------------------------
-    # Physical measurement metrics, straight from Silver readings.
+    # Physical measurement metrics + descriptive attributes, straight
+    # from Silver -- no join needed, Silver already has these columns.
     # ------------------------------------------------------------------
     physical = (
-        enriched
+        silver
         .groupBy("machine_id", "event_date")
         .agg(
             F.avg("moving_average").alias("avg_sensor_reading"),
