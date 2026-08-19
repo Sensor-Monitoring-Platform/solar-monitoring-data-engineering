@@ -2,8 +2,32 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
 
+def _resolve_timestamp_column(df: DataFrame) -> str:
+    """
+    Real Silver data (produced by Silver's transformations.py) names this
+    column `timestamp` (see silver/schemas.py SILVER_OUTPUT_SCHEMA). Some
+    earlier Gold code assumed `event_timestamp`, which never existed on
+    real Silver output -- that mismatch is what caused the
+    UNRESOLVED_COLUMN crash. Resolving the name at runtime means a future
+    rename fails with a clear, actionable message instead of a raw
+    AnalysisException.
+    """
+    for candidate in ("timestamp", "event_timestamp"):
+        if candidate in df.columns:
+            return candidate
+
+    raise ValueError(
+        "Silver DataFrame has neither `timestamp` nor `event_timestamp` "
+        f"column. Available columns: {df.columns}. Check that Silver's "
+        "transformations.py output and schemas.SILVER_INPUT_SCHEMA agree "
+        "on the reading-timestamp column name."
+    )
+
+
 def fact_sensor_reading_daily(silver: DataFrame) -> DataFrame:
     """Daily analytical summary: one row per sensor/day."""
+    ts_col = _resolve_timestamp_column(silver)
+
     return (
         silver
         .groupBy("device_id", "event_date")
@@ -39,8 +63,8 @@ def fact_sensor_reading_daily(silver: DataFrame) -> DataFrame:
 
             F.first("device_type").alias("device_type"),
             F.first("machine_id").alias("machine_id"),
-            F.min("event_timestamp").alias("first_reading_timestamp"),
-            F.max("event_timestamp").alias("last_reading_timestamp"),
+            F.min(ts_col).alias("first_reading_timestamp"),
+            F.max(ts_col).alias("last_reading_timestamp"),
         )
         .withColumn("date_key", F.date_format("event_date", "yyyyMMdd").cast("int"))
         .withColumn("sensor_key", F.xxhash64(F.col("device_id")).cast("long"))
@@ -56,14 +80,14 @@ def fact_sensor_health_daily(silver: DataFrame) -> DataFrame:
         .agg(
             F.count("*").alias("total_events"),
             F.count("reading_value").alias("actual_reading_count"),
-            
+
             F.sum(F.when(F.col("reading_status") == "NORMAL", 1).otherwise(0))
                 .alias("normal_count"),
             F.sum(F.when(F.col("reading_status") == "WARNING", 1).otherwise(0))
                 .alias("warning_count"),
             F.sum(F.when(F.col("reading_status") == "CRITICAL", 1).otherwise(0))
                 .alias("critical_count"),
-            
+
             F.sum(F.col("is_outlier").cast("int")).alias("outlier_count"),
             F.sum(F.col("is_late_arrival").cast("int")).alias("late_arrival_count"),
             F.max("consecutive_nulls").alias("max_consecutive_nulls"),
@@ -153,97 +177,131 @@ def fact_sensor_health_daily(silver: DataFrame) -> DataFrame:
     )
 
 
-def fact_machine_daily(silver: DataFrame) -> DataFrame:
-    """Daily machine summary: one row per machine/day."""
-    return (
+def fact_machine_daily(
+    silver: DataFrame,
+    health_fact: DataFrame,
+) -> DataFrame:
+    """
+    Daily machine summary: one row per machine/day.
+
+    NOTE ON REDESIGN: this no longer takes/joins device_df. Real Silver
+    output already carries machine_name, machine_type, production_line,
+    and plant_id directly (Silver's own enrich_with_metadata() puts them
+    there -- see silver/schemas.py SILVER_OUTPUT_SCHEMA). The previous
+    version re-joined device_df for these same columns, which produced
+    TWO columns with each of those names on the joined DataFrame --
+    tolerated by Spark right up until F.first("machine_name") inside
+    .agg(), which then failed with "Reference 'machine_name' is
+    ambiguous". Reading them straight off `silver` removes both the
+    redundant join and that whole class of bug.
+
+    Completeness, health score, and per-sensor-status counts are rolled
+    up FROM fact_sensor_health_daily rather than recomputed independently,
+    so sensor-grain and machine-grain numbers stay consistent with each
+    other.
+    """
+
+    # ------------------------------------------------------------------
+    # Physical measurement metrics + descriptive attributes, straight
+    # from Silver -- no join needed, Silver already has these columns.
+    # ------------------------------------------------------------------
+    physical = (
         silver
         .groupBy("machine_id", "event_date")
         .agg(
-            F.countDistinct("device_id").alias("sensor_count"),
-            F.count("reading_value").alias("total_readings"),
-
-            F.sum(
-                F.when(F.col("reading_status") == "CRITICAL", 1).otherwise(0)
-            ).alias("critical_readings"),
-
-            F.sum(
-                F.when(F.col("reading_status") == "WARNING", 1).otherwise(0)
-            ).alias("warning_readings"),
-
-            F.sum(F.col("is_outlier").cast("int")).alias("outlier_readings"),
-            
-            F.sum(
-                F.when(F.col("is_late_arrival") == True, 1).otherwise(0)
-            ).alias("late_arrival_count"),
-
             F.avg("moving_average").alias("avg_sensor_reading"),
+
             F.max(
                 F.when(
-                    F.col("device_type").like("temperature%"),
+                    F.col("device_type") == "temperature_process",
                     F.col("reading_value"),
                 )
-            ).alias("max_temperature"),
+            ).alias("max_process_temperature"),
+
+            F.max(
+                F.when(
+                    F.col("device_type") == "temperature_ambient",
+                    F.col("reading_value"),
+                )
+            ).alias("max_ambient_temperature"),
+
             F.max(
                 F.when(
                     F.col("device_type") == "vibration",
                     F.col("reading_value"),
                 )
             ).alias("max_vibration"),
+
             F.max(
                 F.when(
                     F.col("device_type") == "pressure",
                     F.col("reading_value"),
                 )
             ).alias("max_pressure"),
+
             F.max(
                 F.when(
                     F.col("device_type") == "current_draw",
                     F.col("reading_value"),
                 )
             ).alias("max_current"),
-            
+
+            F.first("machine_name").alias("machine_name"),
+            F.first("machine_type").alias("machine_type"),
+            F.first("production_line").alias("production_line"),
             F.first("plant_id").alias("plant_id"),
-            F.first(F.when(F.col("device_type").like("temperature%"), F.col("machine_name"))).alias("machine_name"),
-            F.first(F.when(F.col("device_type").like("temperature%"), F.col("machine_type"))).alias("machine_type"),
-            F.first(F.when(F.col("device_type").like("temperature%"), F.col("production_line"))).alias("production_line"),
-            F.first("machine_operating_condition").alias("machine_operating_condition"),
+            F.first("machine_operating_condition").alias(
+                "machine_operating_condition"
+            ),
         )
-        .withColumn(
-            "active_sensor_count",
-            F.col("sensor_count"),
+    )
+
+    # ------------------------------------------------------------------
+    # Reliability / completeness / health rolled up from the sensor-grain
+    # health fact, so both facts agree with each other.
+    # ------------------------------------------------------------------
+    machine_health = (
+        health_fact
+        .groupBy("machine_id", "event_date")
+        .agg(
+            F.countDistinct("device_id").alias("sensor_count"),
+            F.sum("actual_reading_count").alias("total_readings"),
+            F.sum("expected_reading_count").alias("expected_reading_count_total"),
+
+            F.sum("critical_count").alias("critical_readings"),
+            F.sum("warning_count").alias("warning_readings"),
+            F.sum("outlier_count").alias("outlier_readings"),
+            F.sum("late_arrival_count").alias("late_arrival_count"),
+
+            F.countDistinct(
+                F.when(F.col("critical_count") > 0, F.col("device_id"))
+            ).alias("critical_sensor_count"),
+            F.countDistinct(
+                F.when(F.col("warning_count") > 0, F.col("device_id"))
+            ).alias("warning_sensor_count"),
+
+            F.avg("health_score").alias("avg_sensor_health_score"),
         )
-        .withColumn(
-            "critical_sensor_count",
-            F.when(
-                F.col("critical_readings") > 0,
-                F.col("sensor_count") * F.col("critical_readings") / F.col("total_readings"),
-            ).otherwise(F.lit(0))
-        )
-        .withColumn(
-            "warning_sensor_count",
-            F.when(
-                F.col("warning_readings") > 0,
-                F.col("sensor_count") * F.col("warning_readings") / F.col("total_readings"),
-            ).otherwise(F.lit(0))
-        )
+    )
+
+    return (
+        physical
+        .join(machine_health, ["machine_id", "event_date"], "left")
+        .withColumn("active_sensor_count", F.col("sensor_count"))
         .withColumn(
             "unhealthy_sensor_count",
-            F.col("critical_sensor_count") + F.col("warning_sensor_count")
+            F.col("critical_sensor_count") + F.col("warning_sensor_count"),
         )
         .withColumn(
             "data_completeness_percentage",
             F.when(
-                F.col("total_readings") > 0,
-                F.col("total_readings") / (F.col("sensor_count") * F.lit(86400)) * 100,
-            )
+                F.col("expected_reading_count_total") > 0,
+                F.col("total_readings")
+                / F.col("expected_reading_count_total")
+                * 100,
+            ),
         )
-        .withColumn(
-            "avg_sensor_health_score",
-            F.when(
-                F.col("critical_readings") + F.col("warning_readings") > 0,
-                100 - ((F.col("critical_readings") * 50 + F.col("warning_readings") * 25) / F.col("total_readings") * 100),
-            ).otherwise(F.lit(100))
-        )
+        .drop("expected_reading_count_total")
         .withColumn("date_key", F.date_format("event_date", "yyyyMMdd").cast("int"))
         .withColumn("processing_timestamp", F.current_timestamp())
     )
