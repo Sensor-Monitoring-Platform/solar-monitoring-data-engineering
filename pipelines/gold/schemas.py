@@ -191,24 +191,6 @@ FACT_SENSOR_HEALTH_DAILY_SCHEMA = StructType(
 # ---------------------------------------------------------------------------
 # FACT_MACHINE_DAILY
 # ---------------------------------------------------------------------------
-#
-# Grain:
-#   One row per machine per calendar day.
-#
-# Business key:
-#   (machine_id, date_key)
-#
-# NOTE ON REDESIGN:
-#   This fact is now built ON TOP OF fact_sensor_health_daily rather than
-#   recomputing completeness/health independently from Silver. This keeps
-#   sensor-grain and machine-grain health/completeness numbers consistent
-#   with each other instead of using two different formulas.
-#
-#   max_temperature was split into max_process_temperature and
-#   max_ambient_temperature because "temperature%" previously matched two
-#   sensor types with very different normal ranges (60-180C vs 18-35C),
-#   silently blending them into one misleading figure.
-# ---------------------------------------------------------------------------
 
 FACT_MACHINE_DAILY_SCHEMA = StructType(
     [
@@ -239,15 +221,12 @@ FACT_MACHINE_DAILY_SCHEMA = StructType(
 
         StructField("avg_sensor_reading", DoubleType(), True),
 
-        # Sensor-specific physical metrics. NULL when the machine has no
-        # sensor of that type — must NOT be coerced to zero.
         StructField("max_process_temperature", DoubleType(), True),
         StructField("max_ambient_temperature", DoubleType(), True),
         StructField("max_vibration", DoubleType(), True),
         StructField("max_pressure", DoubleType(), True),
         StructField("max_current", DoubleType(), True),
 
-        # Proxy condition carried from Silver — NOT a certified machine state.
         StructField("machine_operating_condition", StringType(), True),
 
         StructField("processing_timestamp", TimestampType(), False),
@@ -257,28 +236,65 @@ FACT_MACHINE_DAILY_SCHEMA = StructType(
 # ---------------------------------------------------------------------------
 # SILVER_INPUT_SCHEMA
 # ---------------------------------------------------------------------------
+#
+# IMPORTANT: this MUST mirror pipelines/silver/schemas.py's
+# SILVER_OUTPUT_SCHEMA exactly -- Gold and Silver are separate deploy
+# artifacts with no shared import, so this is a manually-kept copy, not
+# an automatic one. It is used as the schema for an EMPTY DataFrame when
+# the Silver Delta table doesn't exist yet (see reader.py). A mismatch
+# here doesn't crash on the empty-table path itself (main.py checks
+# rdd.isEmpty() before any fact function runs), but IS the reference
+# every Gold fact/dimension function is written against -- letting it
+# drift from real Silver output is what caused the earlier
+# `event_timestamp` UNRESOLVED_COLUMN crash (real Silver calls it
+# `timestamp`) and the `machine_name` ambiguous-column crash (real
+# Silver already carries plant_id/machine_name/machine_type/
+# production_line directly; Gold's fact_machine_daily used to re-join
+# device_df for the same columns).
+#
+# If Silver's schema changes, update this to match.
+# ---------------------------------------------------------------------------
 
 SILVER_INPUT_SCHEMA = StructType(
     [
-        StructField("event_timestamp", TimestampType(), False),
-        StructField("event_date", DateType(), False),
-        StructField("device_id", StringType(), False),
-        StructField("device_type", StringType(), False),
+        StructField("device_id", StringType(), True),
+        StructField("device_type", StringType(), True),
+        StructField("plant_id", StringType(), True),
         StructField("machine_id", StringType(), True),
+        StructField("plant_name", StringType(), True),
+        StructField("production_line", StringType(), True),
+        StructField("machine_name", StringType(), True),
+        StructField("machine_type", StringType(), True),
+        StructField("manufacturer", StringType(), True),
+        StructField("firmware_version", StringType(), True),
+        StructField("timestamp", TimestampType(), True),
+        StructField("event_date", StringType(), True),
+        StructField("event_hour", IntegerType(), True),
+        StructField("event_minute", IntegerType(), True),
+        StructField("event_week", IntegerType(), True),
+        StructField("event_month", IntegerType(), True),
+        StructField("event_year", IntegerType(), True),
+        StructField("event_day", IntegerType(), True),
+        StructField("day_of_week", IntegerType(), True),
         StructField("reading_value", DoubleType(), True),
-        StructField("reading_status", StringType(), True),
-        StructField("is_outlier", BooleanType(), True),
+        StructField("reading_unit", StringType(), True),
+        StructField("sensor_unit", StringType(), True),
+        StructField("is_safety_critical", BooleanType(), True),
+        StructField("sampling_frequency_seconds", IntegerType(), True),
         StructField("is_late_arrival", BooleanType(), True),
+        StructField("is_outlier", BooleanType(), True),
+        StructField("reading_status", StringType(), True),
+        StructField("sensor_health", StringType(), True),
+        StructField("machine_operating_condition", StringType(), True),
+        StructField("moving_average", DoubleType(), True),
         StructField("rolling_stddev", DoubleType(), True),
         StructField("delta_previous", DoubleType(), True),
         StructField("percent_change", DoubleType(), True),
         StructField("reading_velocity", DoubleType(), True),
         StructField("reading_acceleration", DoubleType(), True),
-        StructField("consecutive_outliers", IntegerType(), True),
         StructField("consecutive_nulls", IntegerType(), True),
-        StructField("moving_average", DoubleType(), True),
-        StructField("sampling_frequency_seconds", IntegerType(), True),
-        StructField("machine_operating_condition", StringType(), True),
+        StructField("consecutive_outliers", IntegerType(), True),
+        StructField("processing_timestamp", TimestampType(), True),
     ]
 )
 
