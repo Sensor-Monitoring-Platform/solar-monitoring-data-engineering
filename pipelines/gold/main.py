@@ -1,19 +1,19 @@
 from pyspark.sql import functions as F
 
-from .config import DEVICE_METADATA, SENSOR_METADATA
-from .dimensions import build_dim_date, build_dim_sensor
-from .facts import (
+from config import DEVICE_METADATA, SENSOR_METADATA
+from dimensions import build_dim_date, build_dim_sensor
+from facts import (
     fact_machine_daily,
     fact_sensor_health_daily,
     fact_sensor_reading_daily,
 )
-from .metadata_loader import (
+from metadata_loader import (
     create_metadata_dataframes,
     load_yaml,
 )
-from .reader import read_silver_data
-from .spark_session import create_spark
-from .validations import (
+from reader import read_silver_data
+from spark_session import create_spark
+from validations import (
     validate_dimension,
     validate_fact,
 )
