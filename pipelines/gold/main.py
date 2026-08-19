@@ -29,15 +29,16 @@ def main():
         sensor_config = load_yaml(SENSOR_METADATA)
 
         device_df, sensor_config_df = create_metadata_dataframes(
-            spark,
-            devices,
-            sensor_config,
+            spark, devices, sensor_config
         )
 
-        dim_sensor = build_dim_sensor(
-            device_df,
-            sensor_config_df,
-        )
+        # NOTE: We intentionally do NOT enrich `silver` with device_df
+        # attributes here. fact_sensor_reading_daily / fact_sensor_health_daily
+        # don't need plant/machine descriptive columns, and fact_machine_daily
+        # now performs its own join internally — so each fact function is
+        # self-sufficient and doesn't depend on caller-side prep.
+
+        dim_sensor = build_dim_sensor(device_df, sensor_config_df)
 
         # Extract date range from Silver data
         if not silver.rdd.isEmpty():
@@ -45,8 +46,16 @@ def main():
                 F.min(F.col("event_date")).alias("min_date"),
                 F.max(F.col("event_date")).alias("max_date"),
             ).collect()[0]
-            start_date = date_range["min_date"].isoformat() if date_range["min_date"] else "2026-01-01"
-            end_date = date_range["max_date"].isoformat() if date_range["max_date"] else "2026-12-31"
+            start_date = (
+                date_range["min_date"].isoformat()
+                if date_range["min_date"]
+                else "2026-01-01"
+            )
+            end_date = (
+                date_range["max_date"].isoformat()
+                if date_range["max_date"]
+                else "2026-12-31"
+            )
         else:
             start_date, end_date = "2026-01-01", "2026-12-31"
 
@@ -54,7 +63,10 @@ def main():
 
         reading_fact = fact_sensor_reading_daily(silver)
         health_fact = fact_sensor_health_daily(silver)
-        machine_fact = fact_machine_daily(silver)
+
+        # machine_fact depends on health_fact (reuses its completeness/
+        # health numbers) and on device_df (for plant/machine attributes).
+        machine_fact = fact_machine_daily(silver, device_df, health_fact)
 
         validate_dimension(dim_sensor, "dim_sensor", "sensor_key")
         validate_dimension(dim_date, "dim_date", "date_key")
