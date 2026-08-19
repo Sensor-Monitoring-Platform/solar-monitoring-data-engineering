@@ -14,59 +14,37 @@ from pyspark.sql.types import (
 # ---------------------------------------------------------------------------
 # DIM_SENSOR
 # ---------------------------------------------------------------------------
-#
-# Grain:
-#   One row per sensor configuration/version.
-#
-# Current implementation:
-#   SCD Type 1.
-#
-# Future-compatible with SCD Type 2 through:
-#   effective_from
-#   effective_to
-#   is_current
-#
-# sensor_key is the surrogate key used by Gold facts.
-# device_id remains the natural/business key for traceability.
-# ---------------------------------------------------------------------------
 
 DIM_SENSOR_SCHEMA = StructType(
     [
-        # Surrogate / natural keys
         StructField("sensor_key", LongType(), False),
         StructField("device_id", StringType(), False),
         StructField("device_type", StringType(), False),
 
-        # Plant
         StructField("plant_id", StringType(), True),
         StructField("plant_name", StringType(), True),
         StructField("city", StringType(), True),
         StructField("country", StringType(), True),
         StructField("timezone", StringType(), True),
 
-        # Production line
         StructField("line_id", StringType(), True),
         StructField("production_line", StringType(), True),
         StructField("line_type", StringType(), True),
 
-        # Machine
         StructField("machine_id", StringType(), True),
         StructField("machine_name", StringType(), True),
         StructField("machine_type", StringType(), True),
         StructField("manufacturer", StringType(), True),
         StructField("rated_capacity_units_per_hour", IntegerType(), True),
 
-        # Sensor configuration
         StructField("sensor_unit", StringType(), True),
         StructField("is_safety_critical", BooleanType(), True),
         StructField("sampling_frequency_seconds", IntegerType(), True),
 
-        # Sensor lifecycle
         StructField("sensor_install_date", DateType(), True),
         StructField("last_calibration_date", DateType(), True),
         StructField("firmware_version", StringType(), True),
 
-        # Configured operating ranges
         StructField("normal_min", DoubleType(), True),
         StructField("normal_max", DoubleType(), True),
 
@@ -78,7 +56,6 @@ DIM_SENSOR_SCHEMA = StructType(
 
         StructField("offline_grace_period_seconds", IntegerType(), True),
 
-        # Dimension lifecycle
         StructField("is_active", BooleanType(), False),
         StructField("effective_from", TimestampType(), True),
         StructField("effective_to", TimestampType(), True),
@@ -89,16 +66,6 @@ DIM_SENSOR_SCHEMA = StructType(
 
 # ---------------------------------------------------------------------------
 # DIM_DATE
-# ---------------------------------------------------------------------------
-#
-# Grain:
-#   One row per calendar date.
-#
-# date_key:
-#   YYYYMMDD integer representation of full_date.
-#
-# Example:
-#   2026-08-17 -> 20260817
 # ---------------------------------------------------------------------------
 
 DIM_DATE_SCHEMA = StructType(
@@ -132,46 +99,28 @@ DIM_DATE_SCHEMA = StructType(
 # ---------------------------------------------------------------------------
 # FACT_SENSOR_READING_DAILY
 # ---------------------------------------------------------------------------
-#
-# Grain:
-#   One row per sensor per calendar day.
-#
-# Business key:
-#   (sensor_key, date_key)
-#
-# This is the primary analytical sensor fact.
-#
-# Silver contains individual sensor events.
-# Gold compresses those events into daily business-level metrics.
-# ---------------------------------------------------------------------------
 
 FACT_SENSOR_READING_DAILY_SCHEMA = StructType(
     [
-        # Dimension keys
         StructField("sensor_key", LongType(), False),
         StructField("date_key", IntegerType(), False),
 
-        # Traceability
         StructField("device_id", StringType(), False),
         StructField("device_type", StringType(), False),
         StructField("machine_id", StringType(), True),
 
-        # Reading volume
         StructField("reading_count", LongType(), False),
 
-        # Reading statistics
         StructField("avg_reading_value", DoubleType(), True),
         StructField("min_reading_value", DoubleType(), True),
         StructField("max_reading_value", DoubleType(), True),
 
-        # Reading status counts
         StructField("normal_count", LongType(), False),
         StructField("warning_count", LongType(), False),
         StructField("critical_count", LongType(), False),
         StructField("outlier_count", LongType(), False),
         StructField("late_arrival_count", LongType(), False),
 
-        # Rolling / temporal behaviour
         StructField("avg_rolling_stddev", DoubleType(), True),
         StructField("max_rolling_stddev", DoubleType(), True),
 
@@ -187,15 +136,12 @@ FACT_SENSOR_READING_DAILY_SCHEMA = StructType(
         StructField("avg_reading_acceleration", DoubleType(), True),
         StructField("max_reading_acceleration", DoubleType(), True),
 
-        # Consecutive anomaly/null behaviour
         StructField("max_consecutive_outliers", IntegerType(), True),
         StructField("max_consecutive_nulls", IntegerType(), True),
 
-        # Event time boundaries for traceability
         StructField("first_reading_timestamp", TimestampType(), True),
         StructField("last_reading_timestamp", TimestampType(), True),
 
-        # Processing metadata
         StructField("processing_timestamp", TimestampType(), False),
     ]
 )
@@ -204,42 +150,27 @@ FACT_SENSOR_READING_DAILY_SCHEMA = StructType(
 # ---------------------------------------------------------------------------
 # FACT_SENSOR_HEALTH_DAILY
 # ---------------------------------------------------------------------------
-#
-# Grain:
-#   One row per sensor per calendar day.
-#
-# Business key:
-#   (sensor_key, date_key)
-#
-# This fact focuses on data reliability / sensor health rather than
-# physical sensor measurements.
-# ---------------------------------------------------------------------------
 
 FACT_SENSOR_HEALTH_DAILY_SCHEMA = StructType(
     [
-        # Dimension keys
         StructField("sensor_key", LongType(), False),
         StructField("date_key", IntegerType(), False),
 
-        # Traceability
         StructField("device_id", StringType(), False),
         StructField("device_type", StringType(), False),
         StructField("machine_id", StringType(), True),
 
-        # Sampling / availability
         StructField("sampling_frequency_seconds", IntegerType(), True),
         StructField("expected_reading_count", LongType(), True),
         StructField("actual_reading_count", LongType(), False),
         StructField("missing_reading_count", LongType(), True),
 
-        # Data quality
         StructField("normal_count", LongType(), False),
         StructField("warning_count", LongType(), False),
         StructField("critical_count", LongType(), False),
         StructField("outlier_count", LongType(), False),
         StructField("late_arrival_count", LongType(), False),
 
-        # Percentages / KPIs
         StructField("data_completeness_percentage", DoubleType(), True),
         StructField("normal_percentage", DoubleType(), True),
         StructField("warning_percentage", DoubleType(), True),
@@ -247,14 +178,11 @@ FACT_SENSOR_HEALTH_DAILY_SCHEMA = StructType(
         StructField("outlier_percentage", DoubleType(), True),
         StructField("late_arrival_percentage", DoubleType(), True),
 
-        # Reliability indicators
         StructField("max_consecutive_nulls", IntegerType(), True),
         StructField("max_consecutive_outliers", IntegerType(), True),
 
-        # Overall reporting score
         StructField("health_score", DoubleType(), True),
 
-        # Processing metadata
         StructField("processing_timestamp", TimestampType(), False),
     ]
 )
@@ -270,68 +198,64 @@ FACT_SENSOR_HEALTH_DAILY_SCHEMA = StructType(
 # Business key:
 #   (machine_id, date_key)
 #
-# This aggregates the behaviour of all sensors attached to a machine.
+# NOTE ON REDESIGN:
+#   This fact is now built ON TOP OF fact_sensor_health_daily rather than
+#   recomputing completeness/health independently from Silver. This keeps
+#   sensor-grain and machine-grain health/completeness numbers consistent
+#   with each other instead of using two different formulas.
+#
+#   max_temperature was split into max_process_temperature and
+#   max_ambient_temperature because "temperature%" previously matched two
+#   sensor types with very different normal ranges (60-180C vs 18-35C),
+#   silently blending them into one misleading figure.
 # ---------------------------------------------------------------------------
 
 FACT_MACHINE_DAILY_SCHEMA = StructType(
     [
-        # Dimension / business keys
         StructField("machine_id", StringType(), False),
         StructField("date_key", IntegerType(), False),
 
-        # Descriptive traceability
         StructField("plant_id", StringType(), True),
         StructField("machine_name", StringType(), True),
         StructField("machine_type", StringType(), True),
         StructField("production_line", StringType(), True),
 
-        # Sensor coverage
         StructField("sensor_count", LongType(), False),
         StructField("active_sensor_count", LongType(), False),
 
-        # Overall reading volume
         StructField("total_readings", LongType(), False),
 
-        # Event counts
         StructField("critical_readings", LongType(), False),
         StructField("warning_readings", LongType(), False),
         StructField("outlier_readings", LongType(), False),
         StructField("late_arrival_count", LongType(), False),
 
-        # Sensor health
         StructField("avg_sensor_health_score", DoubleType(), True),
         StructField("critical_sensor_count", LongType(), False),
         StructField("warning_sensor_count", LongType(), False),
         StructField("unhealthy_sensor_count", LongType(), False),
 
-        # Machine-level data completeness
         StructField("data_completeness_percentage", DoubleType(), True),
 
-        # Sensor-specific physical metrics.
-        #
-        # These remain NULL when a machine does not have that sensor type.
-        # We must NOT convert missing sensor types to zero.
-        StructField("max_temperature", DoubleType(), True),
+        StructField("avg_sensor_reading", DoubleType(), True),
+
+        # Sensor-specific physical metrics. NULL when the machine has no
+        # sensor of that type — must NOT be coerced to zero.
+        StructField("max_process_temperature", DoubleType(), True),
+        StructField("max_ambient_temperature", DoubleType(), True),
         StructField("max_vibration", DoubleType(), True),
         StructField("max_pressure", DoubleType(), True),
         StructField("max_current", DoubleType(), True),
 
-        # Proxy condition from Silver.
-        #
-        # This is NOT claimed to be a true machine state.
+        # Proxy condition carried from Silver — NOT a certified machine state.
         StructField("machine_operating_condition", StringType(), True),
 
-        # Processing metadata
         StructField("processing_timestamp", TimestampType(), False),
     ]
 )
 
 # ---------------------------------------------------------------------------
 # SILVER_INPUT_SCHEMA
-# ---------------------------------------------------------------------------
-#
-# Schema for Silver layer output that Gold consumes.
-# Gold expects this structure from the Silver layer.
 # ---------------------------------------------------------------------------
 
 SILVER_INPUT_SCHEMA = StructType(
@@ -360,11 +284,6 @@ SILVER_INPUT_SCHEMA = StructType(
 
 # ============================================================================
 # SCHEMA REGISTRY
-# ============================================================================
-#
-# Central registry used by the Gold orchestration/storage layer.
-#
-# This avoids scattering schema names throughout main.py and storage code.
 # ============================================================================
 
 GOLD_SCHEMAS = {
