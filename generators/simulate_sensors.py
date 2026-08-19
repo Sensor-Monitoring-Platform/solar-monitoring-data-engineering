@@ -12,6 +12,12 @@ Usage:
 
     # GitHub Actions (env vars come from secrets)
     python simulate_sensors.py --duration-minutes 5 --batch-size 500
+
+Environment Variables Required:
+    HF_ACCESS_KEY_ID      — Hugging Face S3 Access Key (starts with HFAK...)
+    HF_SECRET_ACCESS_KEY  — Hugging Face S3 Secret Key
+    HF_NAMESPACE          — Your HF username or org name
+    HF_BUCKET_NAME        — Name of your Storage Bucket (e.g. "iot-raw")
 """
 
 import argparse
@@ -23,11 +29,13 @@ import random
 import sys
 import time
 import uuid
-import boto3
-import yaml
-from pathlib import Path
-from botocore.config import Config as BotoConfig
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+import boto3
+import requests
+import yaml
+from botocore.config import Config as BotoConfig
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -434,11 +442,69 @@ def upload_batch(s3_client, bucket_name: str, readings: list[dict], batch_id: st
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
+def _warm_up_alert_api(alert_api_url: str, timeout: int = 90):
+    """
+    Render's free tier sleeps after 15 min of inactivity and takes 30-60s
+    to wake on the next request. Hitting /health here, once, before the
+    timed tick loop starts, absorbs that delay in one predictable place
+    instead of an arbitrary /ingest call mid-loop eating it unexpectedly
+    and throwing off tick timing.
+    """
+    try:
+        resp = requests.get(f"{alert_api_url.rstrip('/')}/health", timeout=timeout)
+        if resp.status_code == 200:
+            log.info("Alert engine is awake and responding")
+        else:
+            log.warning("Alert engine health check returned %d -- continuing anyway", resp.status_code)
+    except requests.RequestException as exc:
+        log.warning(
+            "Alert engine warm-up failed (%s) -- HF bucket upload will still proceed, "
+            "alert forwarding may fail or be slow this run", exc,
+        )
+
+
+def _forward_to_alert_engine(alert_api_url: str, alert_api_key: str, batch: list, timeout: int = 15):
+    """
+    Best-effort forward of one batch to the alert engine's /ingest
+    endpoint. Deliberately defensive -- a failure here must never break
+    the generator's actual job of writing to the HF bucket, which is why
+    every exception is caught and logged rather than raised.
+    """
+    if not alert_api_url:
+        return
+
+    # MalformedLine entries are deliberately broken text for Bronze's
+    # quarantine testing, not real readings -- can't be JSON-serialized
+    # as a normal reading and the alert engine has no use evaluating them.
+    payload_readings = [r for r in batch if isinstance(r, dict)]
+    if not payload_readings:
+        return
+
+    try:
+        headers = {"X-API-Key": alert_api_key} if alert_api_key else {}
+        resp = requests.post(
+            f"{alert_api_url.rstrip('/')}/ingest",
+            json={"readings": payload_readings},
+            headers=headers,
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            log.warning("Alert engine returned %d: %s", resp.status_code, resp.text[:200])
+        else:
+            alerts_created = resp.json().get("alerts_created", 0)
+            if alerts_created:
+                log.info("Alert engine created %d alert(s) from this batch", alerts_created)
+    except requests.RequestException as exc:
+        log.warning("Failed to forward batch to alert engine: %s", exc)
+
+
 def run(
     duration_minutes: int,
     batch_size: int,
     tick_seconds: int,
     dry_run: bool = False,
+    alert_api_url: str = None,
+    alert_api_key: str = None,
 ):
     """
     Main generator loop.
@@ -448,6 +514,10 @@ def run(
         batch_size:       Max readings per upload file.
         tick_seconds:     Seconds between batch flushes.
         dry_run:          If True, print readings to stdout instead of uploading.
+        alert_api_url:    Base URL of the alert engine (e.g. Render URL). If
+                           unset, alert forwarding is skipped entirely --
+                           the HF bucket upload is unaffected either way.
+        alert_api_key:    Shared secret sent as X-API-Key to the alert engine.
     """
     # Load configs
     devices_cfg = load_yaml(CONFIG_DIR / "devices.yaml")
@@ -471,6 +541,9 @@ def run(
         total_ticks = 1
     else:
         total_ticks = max(1, (duration_minutes * 60) // tick_seconds)
+
+    if not dry_run and alert_api_url:
+        _warm_up_alert_api(alert_api_url)
 
     total_readings = 0
     total_batches = 0
@@ -504,6 +577,7 @@ def run(
                         _print_batch(batch, batch_id)
                     else:
                         upload_batch(s3_client, bucket_name, batch, batch_id)
+                        _forward_to_alert_engine(alert_api_url, alert_api_key, batch)
                     total_readings += len(batch)
                     total_batches += 1
                     batch = []
@@ -515,6 +589,7 @@ def run(
                 _print_batch(batch, batch_id)
             else:
                 upload_batch(s3_client, bucket_name, batch, batch_id)
+                _forward_to_alert_engine(alert_api_url, alert_api_key, batch)
             total_readings += len(batch)
             total_batches += 1
 
@@ -581,6 +656,12 @@ def main():
         action="store_true",
         help="Print readings to stdout instead of uploading to S3",
     )
+    parser.add_argument(
+        "--alert-api-url",
+        default=os.environ.get("ALERT_API_URL"),
+        help="Base URL of the alert engine (e.g. https://solar-alert-engine.onrender.com). "
+        "Defaults to the ALERT_API_URL env var. If neither is set, alert forwarding is skipped.",
+    )
 
     args = parser.parse_args()
 
@@ -593,11 +674,16 @@ def main():
             log.error("Set these or use --dry-run for local testing")
             sys.exit(1)
 
+    if not args.alert_api_url:
+        log.info("No alert API URL configured -- alert forwarding disabled for this run")
+
     run(
         duration_minutes=args.duration_minutes,
         batch_size=args.batch_size,
         tick_seconds=args.tick_seconds,
         dry_run=args.dry_run,
+        alert_api_url=args.alert_api_url,
+        alert_api_key=os.environ.get("ALERT_API_KEY"),
     )
 
 

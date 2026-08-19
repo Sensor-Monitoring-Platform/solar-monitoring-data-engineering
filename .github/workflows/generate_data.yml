@@ -9,6 +9,10 @@
 #   HF_SECRET_ACCESS_KEY — Hugging Face S3 Secret Key
 #   HF_NAMESPACE         — Your HF username or org name
 #   HF_BUCKET_NAME       — Name of your Storage Bucket
+#   ALERT_API_URL         — Your Render alert engine URL (optional --
+#                           forwarding is skipped if unset)
+#   ALERT_API_KEY         — Shared secret sent as X-API-Key (optional,
+#                           must match the alert engine's ALERT_API_KEY)
 # ============================================================
 
 name: Generate Sensor Data
@@ -45,6 +49,8 @@ jobs:
       HF_SECRET_ACCESS_KEY: ${{ secrets.HF_SECRET_ACCESS_KEY }}
       HF_NAMESPACE:         ${{ secrets.HF_NAMESPACE }}
       HF_BUCKET_NAME:       ${{ secrets.HF_BUCKET_NAME }}
+      ALERT_API_URL:        ${{ secrets.ALERT_API_URL }}
+      ALERT_API_KEY:        ${{ secrets.ALERT_API_KEY }}
 
     # THIS IS THE KEY CHANGE: Tells the job to run inside the generators folder
     defaults:
@@ -91,3 +97,4 @@ jobs:
           echo "| Duration       | ${{ github.event.inputs.duration_minutes || '5' }} min |" >> $GITHUB_STEP_SUMMARY
           echo "| Bucket         | ${{ env.HF_BUCKET_NAME }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Triggered by   | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Alert forwarding | ${{ env.ALERT_API_URL != '' && 'enabled' || 'disabled (no ALERT_API_URL secret)' }} |" >> $GITHUB_STEP_SUMMARY
