@@ -1,0 +1,64 @@
+# ============================================================
+# GitHub Actions: Full Data Pipeline (Orchestrator)
+# ============================================================
+# Sequences the four stage workflows end-to-end:
+#
+#   Generate Sensor Data -> Process Bronze Layer
+#                         -> Process Silver Layer
+#                         -> Process Gold Layer
+#
+# Each stage is a reusable workflow call (`uses:` + `needs:`), not a
+# separate triggered run -- `needs:` means a stage genuinely will not
+# start if the one before it failed, the same guarantee the old
+# workflow_run + `if: conclusion == 'success'` chain was providing,
+# just built into the mechanism instead of bolted on with a condition.
+#
+# This is now the ONLY place the recurring schedule lives. The four
+# stage workflows (generate_data.yml, process_bronze.yml,
+# process_silver.yml, process_gold.yml) keep workflow_dispatch for
+# manual, standalone runs -- but running one of them by hand no longer
+# cascades into the next stage, since the workflow_run chain that used
+# to do that has been removed from each of them.
+#
+# secrets: inherit passes every secret this repo has configured
+# straight through to each called workflow, with no PAT or extra
+# secret-mapping required -- each stage workflow's existing
+# ${{ secrets.X }} references keep working unchanged.
+# ============================================================
+
+name: Full Data Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      processing_job_id:
+        description: "Identifier for this pipeline run (applied to all four stages)"
+        required: false
+        default: ""
+
+  schedule:
+    - cron: "0 */6 * * *"   # 00:00, 06:00, 12:00, 18:00 UTC
+
+jobs:
+  generate:
+    name: Generate Sensor Data
+    uses: ./.github/workflows/generate_data.yml
+    secrets: inherit
+
+  bronze:
+    name: Process Bronze Layer
+    needs: generate
+    uses: ./.github/workflows/process_bronze.yml
+    secrets: inherit
+
+  silver:
+    name: Process Silver Layer
+    needs: bronze
+    uses: ./.github/workflows/process_silver.yml
+    secrets: inherit
+
+  gold:
+    name: Process Gold Layer
+    needs: silver
+    uses: ./.github/workflows/process_gold.yml
+    secrets: inherit

@@ -113,16 +113,25 @@ def _get_silver_date_range(silver) -> tuple[str, str]:
 
 
 def _write_table(df, name: str):
-    expected_columns = [f.name for f in GOLD_SCHEMAS[name].fields]
+    schema = GOLD_SCHEMAS[name]
+    expected_columns = [f.name for f in schema.fields]
     require_columns(df, expected_columns, name)
-    df = df.select(*expected_columns)
+
+    # Cast every column to its declared type, not just select by name.
+    # Without this, a type mismatch between what Spark actually computes
+    # and what GOLD_SCHEMAS documents (e.g. Python int -> LongType where
+    # the schema says IntegerType, or a quoted YAML date string ->
+    # StringType where the schema says DateType) is never caught -- no
+    # code path here checks types, only column presence (require_columns
+    # is a pure name diff). This makes GOLD_SCHEMAS an enforced contract
+    # instead of just documentation that can silently drift.
+    df = df.select(*[F.col(f.name).cast(f.dataType).alias(f.name) for f in schema.fields])
 
     writer = df.write.format("delta").mode(GOLD_WRITE_MODE)
     if GOLD_WRITE_MODE == "overwrite":
         writer = writer.option("overwriteSchema", "true")
 
     writer.save(GOLD_TABLE_PATHS[name])
-
     return df
 
 

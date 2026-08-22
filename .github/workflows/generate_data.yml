@@ -1,8 +1,17 @@
 # ============================================================
 # GitHub Actions: IoT Sensor Data Generator
 # ============================================================
-# Runs simulate_sensors.py on a schedule (or manually) to
-# generate sensor data and upload it to Hugging Face Buckets.
+# Runs simulate_sensors.py to generate sensor data and upload
+# it to Hugging Face Buckets.
+#
+# Triggers:
+#   - workflow_dispatch: manual, standalone run
+#   - workflow_call:     invoked by .github/workflows/full_pipeline.yml
+#                        as the first stage of the orchestrated pipeline
+#
+# No schedule here anymore -- full_pipeline.yml is the single source
+# of truth for the recurring cron. Run this standalone only when you
+# want just the generator, without Bronze/Silver/Gold following it.
 #
 # Required Repository Secrets:
 #   HF_ACCESS_KEY_ID     — Hugging Face S3 Access Key
@@ -35,8 +44,7 @@ on:
         required: false
         default: "30"
         type: string
-  schedule:
-    - cron: "0 */6 * * *"
+  workflow_call:
 
 jobs:
   generate:

@@ -6,6 +6,15 @@
 # a Delta table in the same bucket (bronze/ and
 # bronze_quarantine/ prefixes).
 #
+# Triggers:
+#   - workflow_dispatch: manual, standalone run (does NOT trigger
+#                        Silver/Gold -- use full_pipeline.yml for that)
+#   - workflow_call:     invoked by .github/workflows/full_pipeline.yml
+#                        as the second stage of the orchestrated pipeline
+#
+# No schedule or workflow_run chain here anymore -- full_pipeline.yml
+# owns both the cron and the Bronze -> Silver -> Gold sequencing.
+#
 # Required Repository Secrets (same ones generate_data.yml uses, plus TiDB):
 #   HF_ACCESS_KEY_ID     — Hugging Face S3 Access Key
 #   HF_SECRET_ACCESS_KEY — Hugging Face S3 Secret Key
@@ -21,32 +30,19 @@
 name: Process Bronze Layer
 
 on:
-  # Manual trigger
   workflow_dispatch:
     inputs:
       processing_job_id:
         description: "Identifier for this pipeline run"
         required: false
         default: ""
-
-  # Chain automatically after a successful data-generation run
-  workflow_run:
-    workflows: ["Generate Sensor Data"]
-    types:
-      - completed
-
-  # Independent safety-net schedule, offset 15 min after the generator
-  schedule:
-    - cron: "15 */6 * * *"
+  workflow_call:
 
 jobs:
   bronze:
     name: Run Bronze Pipeline
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: >
-      github.event_name != 'workflow_run' ||
-      github.event.workflow_run.conclusion == 'success'
 
     env:
       HF_ACCESS_KEY_ID:     ${{ secrets.HF_ACCESS_KEY_ID }}

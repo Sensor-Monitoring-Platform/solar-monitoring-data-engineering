@@ -12,6 +12,15 @@
 #   fact_sensor_health_daily
 #   fact_machine_daily
 #
+# Triggers:
+#   - workflow_dispatch: manual, standalone run
+#   - workflow_call:     invoked by .github/workflows/full_pipeline.yml
+#                        as the fourth and final stage of the
+#                        orchestrated pipeline
+#
+# No schedule or workflow_run chain here anymore -- full_pipeline.yml
+# owns both the cron and the Bronze -> Silver -> Gold sequencing.
+#
 # Required Repository Secrets:
 #   HF_ACCESS_KEY_ID
 #   HF_SECRET_ACCESS_KEY
@@ -28,26 +37,13 @@ on:
         description: "Identifier for this pipeline run"
         required: false
         default: ""
-
-  # Chain automatically after a successful Silver run
-  workflow_run:
-    workflows: ["Process Silver Layer"]
-    types:
-      - completed
-
-  # Independent safety-net schedule
-  schedule:
-    - cron: "45 */6 * * *"   # 15 min after Silver
+  workflow_call:
 
 jobs:
   gold:
     name: Run Gold Pipeline
     runs-on: ubuntu-latest
     timeout-minutes: 20
-
-    if: >
-      github.event_name != 'workflow_run' ||
-      github.event.workflow_run.conclusion == 'success'
 
     env:
       HF_ACCESS_KEY_ID: ${{ secrets.HF_ACCESS_KEY_ID }}
@@ -75,7 +71,7 @@ jobs:
     defaults:
       run:
         working-directory: ./pipelines/gold
-    
+
     steps:
 
       # --------------------------------------------------------
